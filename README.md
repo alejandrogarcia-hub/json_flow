@@ -22,15 +22,8 @@ The JSON stream parser's complexity can be analyzed by its key operations:
    - Validation of brace/bracket count: O(n)
    - Parsing operation: O(n)
 
-2. **Parsing Operations**:
-   - Object parsing: O(n) where n is the length of the object string
-   - Array parsing: O(n) where n is the length of the array string
-   - String parsing: O(n) with escape character handling
-   - Number parsing: O(n) for validating numeric format
-   - Value parsing: O(n) with constant-time type detection
-
-3. **Get Operation**: O(n)
-   - JSON loads operation: O(n) where n is the length of the valid JSON string
+2. **Get Operation**: O(1)
+   - return the string parsed
 
 ### Space Complexity
 
@@ -40,9 +33,10 @@ The JSON stream parser's complexity can be analyzed by its key operations:
 
 2. **Parsing Operations**: O(1)
    - All parsing operations use constant extra space
-   - No recursive calls, preventing stack overflow
 
+### Recursion
 
+The parser uses recursion to handle nested structures. The depth of the recursion is determined by the depth of the JSON structure being parsed. For deep nested json files, it might raise a stack overflow runtime error.
 
 ## Installation
 

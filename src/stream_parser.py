@@ -16,7 +16,7 @@ Classes:
     StreamJsonParser: Main class for streaming JSON parsing.
 """
 
-from typing import Any, Literal, Optional, Union
+from typing import Literal, Optional, Union
 
 from config import logger
 
