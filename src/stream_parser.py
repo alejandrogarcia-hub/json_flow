@@ -16,7 +16,6 @@ Classes:
     StreamJsonParser: Main class for streaming JSON parsing.
 """
 
-import json
 from typing import Any, Literal, Optional, Union
 
 from config import logger
@@ -105,7 +104,7 @@ class StreamJsonParser:
     def __init__(self):
         """Initialize a new StreamJsonParser instance."""
         self.chunks: list[str] = []
-        self.current_valid_json: str = ""
+        self.current_valid_json: str = None
 
     def consume(self, json_str: str) -> None:
         """Consume a chunk of JSON data for streaming parse.
@@ -129,13 +128,36 @@ class StreamJsonParser:
             # validate the number of open and close braces and square brackets
             # the number of open brackets can be higher than the number of close braces and brackets
             chunks_str = "".join(self.chunks)
-            # count the number of open braces and brackets
-            if (
-                chunks_str.count("{") - chunks_str.count("}") < 0
-                or chunks_str.count("[") - chunks_str.count("]") < 0
-            ):
+
+            # validate the case for multiple starting roots and valid number of close brackets and braces
+            # `{data}{some other data}` or `{data}[some other data]` are invalid
+            # `[data][some other data]` or `[data]{some other data}` are invalid
+            # `{data}` or `[data]` is valid
+            # []], {}} are invalid
+            root = False
+            stack = []
+            for c in chunks_str:
+                if c in "{[":
+                    if root and len(stack) == 0:
+                        raise StreamParserJSONDecodeError(
+                            "multiple roots are not a valid json"
+                        )
+                    if len(stack) == 0:
+                        root = True
+
+                    stack.append(c)
+                    continue
+
+                if c in "]}":
+                    if not stack or stack[-1] not in "{[":
+                        raise StreamParserJSONDecodeError(
+                            "in valid json, expected { or ["
+                        )
+                    stack.pop(-1)
+
+            if len(stack) > 0 and stack[-1] in "]}":
                 raise StreamParserJSONDecodeError(
-                    "Number of open braces and brackets does not match"
+                    "there are more closing brackets or braces than the open ones"
                 )
 
             self._parse(chunks_str)
@@ -215,9 +237,9 @@ class StreamJsonParser:
             if len(json_str) == 1:
                 return 1, "-", True
 
-            elif json_str[1] != "I":
-                return self._parse_numbers(json_str)
+            return self._parse_numbers(json_str)
 
+        # JSON flow, null
         # for the following cases, we return
         # case length - 1, None, True
         # the reason for case length - 1 is because the pointer is already
@@ -240,24 +262,6 @@ class StreamJsonParser:
             return 4, None, True
 
         if "false".startswith(json_str):
-            return 0, None, True
-
-        if json_str.startswith("Infinity"):
-            return 7, None, True
-
-        if "Infinity".startswith(json_str):
-            return 0, None, True
-
-        if json_str.startswith("-Infinity"):
-            return 9, None, True
-
-        if "-Infinity".startswith(json_str):
-            return 0, None, True
-
-        if json_str.startswith("NaN"):
-            return 2, None, True
-
-        if "NaN".startswith(json_str):
             return 0, None, True
 
         raise MalformedJSON(f"string {json_str} does not follow json spec")
@@ -438,6 +442,12 @@ class StreamJsonParser:
                         f"string {json_str} shall be comma or close bracket"
                     )
 
+                j = _find_non_whitespace_index(json_str, from_index=j)
+                current_char = json_str[j]
+
+                if current_char == "]":
+                    raise MalformedJSON("not a valid json, expected a value")
+
         except IndexError:
             return i, "]", False
         except MalformedJSON as e:
@@ -526,25 +536,14 @@ class StreamJsonParser:
 
         return i - 1 if not modified and i < length else i, None, j < length
 
-    def get(self) -> Optional[dict[str, Any]]:
+    def get(self) -> str:
         """Get the current valid JSON object.
 
         Attempts to parse the accumulated JSON string into a Python object.
         Handles both complete and partial JSON structures.
 
         Returns:
-            Optional[dict[str, Any]]: The parsed JSON object if available,
+            str: The parsed JSON object if available,
                 None if no valid JSON is available.
-
-        Raises:
-            StreamParserJSONDecodeError: If the accumulated JSON string
-                cannot be parsed into a valid Python object.
         """
-        if not self.current_valid_json:
-            return None
-        try:
-            return json.loads(self.current_valid_json)
-        except json.decoder.JSONDecodeError:
-            msg = "we received an invalid json from the stream"
-            logger.error(msg)
-            raise StreamParserJSONDecodeError(msg)
+        return self.current_valid_json
