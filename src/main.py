@@ -92,13 +92,13 @@ class StreamJsonParser:
         if current_char == "{":
             # we have an object
             # parse the object
-            # i, last_char, close = self._parse_object(json_str)
-            # if close:
-            #     return f"{json_str[: i]}{last_char}"
-
             i, last_char, close = self._parse_object(json_str)
             if close:
-                return i, last_char, close
+                return f"{json_str[: i]}{last_char}"
+
+            # i, last_char, close = self._parse_object(json_str)
+            # if close:
+            #     return i, last_char, close
 
         # JSON value, array
         if current_char == "[":
