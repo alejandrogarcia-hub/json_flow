@@ -3,7 +3,7 @@ import unittest
 import pytest
 
 from config import logger
-from main import JSONDecodeError, StreamJsonParser
+from stream_parser import JSONDecodeError, StreamJsonParser
 
 
 @pytest.fixture(autouse=True)
