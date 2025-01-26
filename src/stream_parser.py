@@ -191,7 +191,7 @@ class StreamJsonParser:
                 # JSON flow, closed brace
                 if current_char == "}":
                     # we close the current object
-                    return j, None, True
+                    return j, "}", True
 
                 # JSON flow string (key)
                 sj, last_char, is_closed = self._parse_string(json_str[j:])
