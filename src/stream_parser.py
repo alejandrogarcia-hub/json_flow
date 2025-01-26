@@ -7,6 +7,8 @@ The solutions is based on 2 pointers, and json flow specification
 - i points to a valid json
 - j points to subsequent characters from i
 
+We have a boolean as part of the ParseResult to indicate if parsing is complete, or partial.
+
 Classes:
     JSONDecodeError: Base class for JSON parsing errors.
     PartialJSON: Error for incomplete JSON data.
@@ -28,29 +30,49 @@ ParseResult = Union[tuple[int, Optional[str], Literal[True]], Literal[False]]
 
 
 class StreamParserJSONDecodeError(ValueError):
-    """Base class for JSON parsing errors."""
+    """Base class for JSON parsing errors in the stream parser.
+
+    This exception is raised when there are errors in parsing JSON data
+    in a streaming context, such as malformed JSON or invalid token sequences.
+    """
+
     pass
 
 
 class PartialJSON(StreamParserJSONDecodeError):
-    """Error for incomplete JSON data."""
+    """Error indicating incomplete JSON data.
+
+    This exception is raised when the JSON data stream is incomplete
+    and more data is needed to form a valid JSON structure.
+    """
+
     pass
 
 
 class MalformedJSON(StreamParserJSONDecodeError):
-    """Error for invalid JSON format."""
+    """Error indicating invalid JSON format.
+
+    This exception is raised when the JSON data violates the JSON specification,
+    such as missing delimiters, invalid tokens, or incorrect nesting.
+    """
+
     pass
 
 
 def _find_non_whitespace_index(json_str: str, from_index: int = 0) -> int:
     """Find the index of the first non-whitespace character.
 
+    Scans the input string starting from the specified index to find
+    the first character that is not considered whitespace according to
+    the JSON specification (space, horizontal tab, line feed, or carriage return).
+
     Args:
         json_str: String to search for non-whitespace characters.
-        from_index: Starting index for the search (default: 0).
+        from_index: Starting index for the search. Defaults to 0.
 
     Returns:
-        int: Index of the first non-whitespace character.
+        int: Index of the first non-whitespace character. If no non-whitespace
+            character is found, returns the length of the string.
     """
     while from_index < len(json_str):
         char = json_str[from_index]
@@ -86,25 +108,47 @@ class StreamJsonParser:
         self.current_valid_json: str = ""
 
     def consume(self, json_str: str) -> None:
-        """Consume a chunk of JSON data.
+        """Consume a chunk of JSON data for streaming parse.
+
+        This method accepts partial JSON data and maintains state between chunks.
+        It validates basic JSON structure by checking brace/bracket balance and
+        updates the internal state for partial parsing.
 
         Args:
             json_str: A string containing a chunk of JSON data.
 
         Raises:
-            JSONDecodeError: If the JSON data is invalid or malformed.
+            StreamParserJSONDecodeError: If the JSON data is invalid, such as having
+                more closing braces/brackets than opening ones, or other malformed
+                JSON structures.
         """
         try:
             logger.debug({"input": json_str})
             # add to chunks
             self.chunks.append(json_str)
-            self._parse("".join(self.chunks))
+            # validate the number of open and close braces and square brackets
+            # the number of open brackets can be higher than the number of close braces and brackets
+            chunks_str = "".join(self.chunks)
+            # count the number of open braces and brackets
+            if (
+                chunks_str.count("{") - chunks_str.count("}") < 0
+                or chunks_str.count("[") - chunks_str.count("]") < 0
+            ):
+                raise StreamParserJSONDecodeError(
+                    "Number of open braces and brackets does not match"
+                )
+
+            self._parse(chunks_str)
         except StreamParserJSONDecodeError as e:
             logger.error(e)
             raise StreamParserJSONDecodeError(e)
 
     def _parse(self, json_str: str) -> None:
         """Parse the complete JSON string.
+
+        Initiates parsing of the accumulated JSON string, handling both complete
+        and partial JSON structures. Validates that the JSON starts with either
+        an object or array.
 
         Args:
             json_str: The complete JSON string to parse.
@@ -123,19 +167,28 @@ class StreamJsonParser:
         self.current_valid_json = f"{json_str[:i]}{last_char}"
 
     def _parse_value(self, json_str: str) -> ParseResult:
-        """Parse a JSON value.
+        """Parse any JSON value.
+
+        Handles parsing of all possible JSON value types:
+        - Objects (starting with {)
+        - Arrays (starting with [)
+        - Numbers (including integers, floats, scientific notation)
+        - Strings (enclosed in double quotes)
+        - Boolean values (true/false)
+        - null
+        - Special values (Infinity, -Infinity, NaN)
 
         Args:
             json_str: The JSON string to parse.
 
         Returns:
-            ParseResult: A tuple containing the parsing result:
-                - If parsing is complete: (index, None, True)
-                - If parsing is partial: (index, closing_char, False)
-                - If parsing failed: False
+            ParseResult: A tuple containing:
+                - Index where parsing ended
+                - Closing character if needed (None if not needed)
+                - Boolean indicating if parsing is complete
 
         Raises:
-            MalformedJSON: If the JSON string doesn't follow JSON specification.
+            MalformedJSON: If the value doesn't follow JSON specification.
         """
         # JSON VALUE, whitespace
         i = _find_non_whitespace_index(json_str, from_index=0)
@@ -149,32 +202,95 @@ class StreamJsonParser:
         if current_char == "[":
             return self._parse_array(json_str)
 
+        if current_char in "0123456789":
+            # JSON flow, number
+            return self._parse_numbers(json_str)
+
         if current_char == '"':
             # JSON flow, string
             return self._parse_string(json_str)
 
-        if current_char in "0123456789-":
-            # JSON flow, number
-            return self._parse_numbers(json_str)
+        if current_char == "-":
+            if len(json_str) == 1:
+                return 1, "-", True
+
+            elif json_str[1] != "I":
+                return self._parse_numbers(json_str)
+
+        # for the following cases, we return
+        # case length - 1, None, True
+        # the reason for case length - 1 is because the pointer is already
+        # at the first char of the case.
+        # None, because there is not need to close them
+        # True, valid case
+        if json_str.startswith("null"):
+            return 3, None, True
+
+        if "null".startswith(json_str):
+            return 0, None, True
+
+        if json_str.startswith("true"):
+            return 3, None, True
+
+        if "true".startswith(json_str):
+            return 0, None, True
+
+        if json_str.startswith("false"):
+            return 4, None, True
+
+        if "false".startswith(json_str):
+            return 0, None, True
+
+        if json_str.startswith("Infinity"):
+            return 7, None, True
+
+        if "Infinity".startswith(json_str):
+            return 0, None, True
+
+        if json_str.startswith("-Infinity"):
+            return 9, None, True
+
+        if "-Infinity".startswith(json_str):
+            return 0, None, True
+
+        if json_str.startswith("NaN"):
+            return 2, None, True
+
+        if "NaN".startswith(json_str):
+            return 0, None, True
 
         raise MalformedJSON(f"string {json_str} does not follow json spec")
 
     def _parse_object(self, json_str: str) -> ParseResult:
         """Parse a JSON object.
 
+        Handles parsing of JSON objects, including nested objects and partial objects.
+        Supports streaming parse by maintaining state for incomplete objects.
+
+        The method follows this flow:
+        1. Parse object key (must be a string)
+        2. Expect and consume colon
+        3. Parse value
+        4. Handle comma for multiple key-value pairs
+        5. Handle closing brace
+
         Args:
             json_str: The JSON string to parse.
 
         Returns:
-            ParseResult: A tuple containing the parsing result:
-                - If parsing is complete: (index, None, True)
-                - If parsing is partial: (index, closing_chars, False)
-                - If parsing failed: False
+            ParseResult: A tuple containing:
+                - Index where parsing ended
+                - Closing brace if needed (None if not needed)
+                - Boolean indicating if parsing is complete
 
         Raises:
-            MalformedJSON: If the JSON string doesn't follow JSON specification.
+            MalformedJSON: If the object structure is invalid.
             IndexError: If the JSON string is incomplete.
         """
+        if len(json_str) == 1:
+            # partial close at i
+            return 1, "}", False
+
         i = 1
         j = 1
         try:
@@ -188,13 +304,13 @@ class StreamJsonParser:
 
                 # JSON flow, closed brace
                 if current_char == "}":
-                    # we close the current object
+                    # close at j
                     return j, "}", True
 
                 # JSON flow string (key)
                 sj, last_char, is_closed = self._parse_string(json_str[j:])
                 if not is_closed:
-                    # close it from i, meaning, forget all that comes after i
+                    # partial close at i
                     return i, "}", False
 
                 # advanced over the whole string
@@ -204,7 +320,9 @@ class StreamJsonParser:
                 j = _find_non_whitespace_index(json_str, from_index=j)
                 # JSON flow, colon
                 if json_str[j] != ":":
-                    raise MalformedJSON(f"string {json_str} does not follow json spec")
+                    raise MalformedJSON(
+                        f"string {json_str} does not follow json spec, expected colon"
+                    )
 
                 j += 1
                 # JSON flow, whitespace
@@ -213,7 +331,7 @@ class StreamJsonParser:
                 # JSON flow, value
                 sj, last_char, closed = self._parse_value(json_str[j:])
                 if not closed:
-                    # we can have impartial values
+                    # partial close it at j + sj, we accept partial values
                     close_str = "{}{}".format(last_char, "}") if last_char else "}"
                     return j + sj, close_str, False
 
@@ -224,6 +342,11 @@ class StreamJsonParser:
 
                 # JSON flow, whitespace
                 j = _find_non_whitespace_index(json_str, from_index=j)
+                if j >= len(json_str):
+                    # partial close at j
+                    # from i to j, there can only be whitespaces
+                    return i, "}", False
+
                 # JSON flow, comma or closed brace
                 if json_str[j] != "," and json_str[j] != "}":
                     raise MalformedJSON(
@@ -231,6 +354,7 @@ class StreamJsonParser:
                     )
 
                 if json_str[j] == "}":
+                    # close at j
                     return j, "}", True
 
                 # keep moving, another round of object flow
@@ -242,23 +366,29 @@ class StreamJsonParser:
 
     def _parse_array(self, json_str: str) -> ParseResult:
         """Parse a JSON array value.
-        
-        This method handles parsing of JSON arrays, including partial arrays.
-        It supports both complete and incomplete array inputs, maintaining
-        state between partial inputs.
+
+        Handles parsing of JSON arrays, including nested arrays and partial arrays.
+        Supports streaming parse by maintaining state for incomplete arrays.
+
+        The method follows this flow:
+        1. Parse array value
+        2. Handle comma for multiple values
+        3. Handle closing bracket
+        4. Support partial arrays for streaming
 
         Args:
             json_str: The JSON string to parse.
 
         Returns:
-            ParseResult: A tuple containing the parsing result:
-                - If parsing is complete: (index, closing_chars, True)
-                - If parsing is partial: (index, closing_chars, False)
-                - If parsing failed: False
+            ParseResult: A tuple containing:
+                - Index where parsing ended
+                - Closing bracket if needed (None if not needed)
+                - Boolean indicating if parsing is complete
 
         Raises:
-            MalformedJSON: If the JSON string doesn't follow JSON specification.
+            MalformedJSON: If the array structure is invalid.
             IndexError: If the JSON string is incomplete.
+            StreamParserJSONDecodeError: If array format violates JSON spec.
         """
         i = 1
         j = 1
@@ -268,10 +398,12 @@ class StreamJsonParser:
                 current_char = json_str[j]
 
                 if current_char == "]":
+                    # close at j
                     return j, "]", True
 
                 sj, last_char, is_closed = self._parse_value(json_str[j:])
                 if not is_closed:
+                    # partial close at j, we accept partial values
                     return j + sj, "{}{}".format(last_char, "]"), False
 
                 j += sj + 1
@@ -281,9 +413,15 @@ class StreamJsonParser:
 
                 # JSON flow, whitespace
                 j = _find_non_whitespace_index(json_str, from_index=j)
+                # we know the value therefore we should be able to close the array
+                if j >= len(json_str):
+                    # partial close at j
+                    return j, "]", False
+
                 # JSON flow, comma or closed bracket
                 if json_str[j] == "]":
-                    return i, "]", True
+                    # close at j
+                    return j, "]", True
 
                 if json_str[j] == ",":
                     j += 1
@@ -291,37 +429,61 @@ class StreamJsonParser:
                     raise MalformedJSON(
                         f"string {json_str} shall be comma or close bracket"
                     )
-        
+
+                j = _find_non_whitespace_index(json_str, from_index=j)
+                # we know the value therefore we should be able to close the array
+                if j >= len(json_str):
+                    # partial close at i
+                    # here we close it at i otherwise
+                    # it can only have whitespaces after a comma
+                    # and that is not a valid json
+                    return i, "]", False
+
+                current_char = json_str[j]
+                # we cannot have a comma and the arrays ends
+                # as per spec, it is not a valid json
+                if current_char == "]":
+                    raise StreamParserJSONDecodeError(
+                        "not a valid json for array values"
+                    )
+
         except IndexError:
             return i, "]", False
+        except MalformedJSON as e:
+            raise e
 
     def _parse_string(self, json_str: str) -> ParseResult:
         """Parse a JSON string value.
 
-        This method handles parsing of JSON string values, including escaped characters
-        like \n, \t, \r, \", etc. It properly skips over escaped characters when
-        looking for the string terminator.
+        Handles parsing of JSON strings, including escaped characters.
+        Properly handles escape sequences including:
+        - Quote (\\")
+        - Backslash (\\\\)
+        - Forward slash (\\/)
+        - Backspace (\\b)
+        - Form feed (\\f)
+        - Line feed (\\n)
+        - Carriage return (\\r)
+        - Tab (\\t)
+        - Unicode (\\uXXXX)
 
         Args:
             json_str: The JSON string to parse.
 
         Returns:
-            ParseResult: A tuple containing the parsing result:
-                - If parsing is complete: (index, None, True)
-                - If parsing is partial: (index, '"', False)
-                - If parsing failed: False
-
-        Todo:
-            * Add validation for escaped string values (\\uXXXX)
+            ParseResult: A tuple containing:
+                - Index where parsing ended
+                - Closing quote if needed (None if not needed)
+                - Boolean indicating if parsing is complete
         """
         i = 1
         while i < len(json_str):
             # Check for escape character
-            if json_str[i] == '\\':
+            if json_str[i] == "\\":
                 # Skip the next character as it's escaped
                 i += 2
                 continue
-            
+
             if json_str[i] == '"':
                 return i, None, True
 
@@ -329,6 +491,33 @@ class StreamJsonParser:
         return i, '"', False
 
     def _parse_numbers(self, json_str: str) -> ParseResult:
+        """Parse a JSON number value.
+
+        Handles parsing of all JSON number formats:
+        - Integers (e.g., 123, -456)
+        - Floating point (e.g., 123.456, -123.456)
+        - Scientific notation (e.g., 1.23e4, 1.23E4, -1.23e-4)
+        - Special cases (0, -0, etc.)
+
+        The method uses a state machine to track parsing state:
+        - State 0: Start (expect minus or digit)
+        - State 1: After minus (expect digit)
+        - State 2: After first digit in integer part
+        - State 3: After decimal point (expect digit)
+        - State 4: After digit in fraction part
+        - State 5: After e/E (expect sign or digit)
+        - State 6: After sign in exponent (expect digit)
+        - State 7: After digit in exponent
+
+        Args:
+            json_str: The JSON string to parse.
+
+        Returns:
+            ParseResult: A tuple containing:
+                - Index where parsing ended
+                - None (no closing character needed)
+                - Boolean indicating if parsing is complete
+        """
         i = 1
         length = len(json_str)
 
@@ -343,21 +532,28 @@ class StreamJsonParser:
         while json_str[i - 1] in ".-+eE":
             modified = True
             i -= 1
-        
+
         return i - 1 if not modified and i < length else i, None, j < length
 
     def get(self) -> Optional[dict[str, Any]]:
         """Get the current valid JSON object.
 
+        Attempts to parse the accumulated JSON string into a Python object.
+        Handles both complete and partial JSON structures.
+
         Returns:
             Optional[dict[str, Any]]: The parsed JSON object if available,
-                None otherwise.
+                None if no valid JSON is available.
+
+        Raises:
+            StreamParserJSONDecodeError: If the accumulated JSON string
+                cannot be parsed into a valid Python object.
         """
         if not self.current_valid_json:
             return None
         try:
             return json.loads(self.current_valid_json)
-        except json.decoder.JSONDecodeError as e:
-            msg = "we received an invlaid json from the stream"
+        except json.decoder.JSONDecodeError:
+            msg = "we received an invalid json from the stream"
             logger.error(msg)
             raise StreamParserJSONDecodeError(msg)

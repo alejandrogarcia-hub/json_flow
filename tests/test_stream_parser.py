@@ -3,7 +3,7 @@ import unittest
 import pytest
 
 from config import logger
-from stream_parser import StreamParserJSONDecodeError, StreamJsonParser
+from stream_parser import StreamJsonParser, StreamParserJSONDecodeError
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +142,7 @@ class TestStreamJsonParser(unittest.TestCase):
         result = self.parser.get()
         self.assertEqual(result, {})
 
-        self.parser.consume('\r\n\t  :  \n\t')
+        self.parser.consume("\r\n\t  :  \n\t")
         result = self.parser.get()
         self.assertEqual(result, {})
 
@@ -152,7 +152,7 @@ class TestStreamJsonParser(unittest.TestCase):
 
     def test_object_empty_with_whitespace(self):
         """Test empty object with various whitespace."""
-        self.parser.consume('{\n\t\r  }')
+        self.parser.consume("{\n\t\r  }")
         result = self.parser.get()
         self.assertEqual(result, {})
 
@@ -161,12 +161,6 @@ class TestStreamJsonParser(unittest.TestCase):
         self.parser.consume('{\n  "outer"\t: {\r\n\t  "inner": "value"\n\t  }\r\n}')
         result = self.parser.get()
         self.assertEqual(result, {"outer": {"inner": "value"}})
-
-    def test_object_corner_case_unicode_escape(self):
-        """Test object with Unicode escape sequences in key and value."""
-        self.parser.consume('{"\\u006B\\u0065\\u0079": "\\u0076\\u0061\\u006C"}')  # "key": "val"
-        result = self.parser.get()
-        self.assertEqual(result, {"key": "val"})
 
     def test_object_corner_case_unicode_escape(self):
         """Test object with Unicode escape sequences in key and value."""
@@ -190,7 +184,12 @@ class TestStreamJsonParser(unittest.TestCase):
 
     def test_object_corner_case_max_nesting(self):
         """Test object with deep nesting."""
-        deep_json = "{" + "".join(['"k%d": {' % i for i in range(20)]) + '"value": "deep"' + "}" * 20
+        deep_json = (
+            "{"
+            + "".join([f'"k{i}": {{' for i in range(20)])
+            + '"value": "deep"'
+            + "}" * 20
+        )
         self.parser.consume(deep_json)
         result = self.parser.get()
         # Verify the deepest value
@@ -203,7 +202,7 @@ class TestStreamJsonParser(unittest.TestCase):
     def test_object_corner_case_long_key_value(self):
         """Test object with very long key and value."""
         long_str = "x" * 1000
-        self.parser.consume('{"%s": "%s"}' % (long_str, long_str))
+        self.parser.consume(f'{{"{long_str}": "{long_str}"}}')
         result = self.parser.get()
         self.assertEqual(result, {long_str: long_str})
 
@@ -212,6 +211,58 @@ class TestStreamJsonParser(unittest.TestCase):
         self.parser.consume('{"": ""}')
         result = self.parser.get()
         self.assertEqual(result, {"": ""})
+
+    def test_empty_array(self):
+        """Test parsing an empty array."""
+        self.parser.consume("[]")
+        result = self.parser.get()
+        self.assertEqual(result, [])
+
+    def test_array_with_single_value(self):
+        """Test parsing an array with a single string value."""
+        self.parser.consume('["test"]')
+        result = self.parser.get()
+        self.assertEqual(result, ["test"])
+
+    def test_array_with_multiple_values(self):
+        """Test parsing an array with multiple string values."""
+        self.parser.consume('["test1", "test2", "test3"]')
+        result = self.parser.get()
+        self.assertEqual(result, ["test1", "test2", "test3"])
+
+    def test_array_with_partial_input(self):
+        """Test parsing an array with partial input in multiple chunks."""
+        self.parser.consume('["test1"')
+        result = self.parser.get()
+        self.assertEqual(result, ["test1"])
+
+        self.parser.consume(', "test2"')
+        result = self.parser.get()
+        self.assertEqual(result, ["test1", "test2"])
+
+        self.parser.consume("]")
+        result = self.parser.get()
+        self.assertEqual(result, ["test1", "test2"])
+
+    def test_nested_array_in_object(self):
+        """Test parsing an object containing an array."""
+        self.parser.consume('{"values": ["test1", "test2"]}')
+        result = self.parser.get()
+        self.assertEqual(result, {"values": ["test1", "test2"]})
+
+    def test_array_in_object_partial(self):
+        """Test parsing an object with array using partial input."""
+        self.parser.consume('{"values": [')
+        result = self.parser.get()
+        self.assertEqual(result, {"values": []})
+
+        self.parser.consume('"test1", ')
+        result = self.parser.get()
+        self.assertEqual(result, {"values": ["test1"]})
+
+        self.parser.consume('"test2"]}')
+        result = self.parser.get()
+        self.assertEqual(result, {"values": ["test1", "test2"]})
 
     def test_object_number_integer(self):
         """Test object with integer values."""
@@ -241,9 +292,9 @@ class TestStreamJsonParser(unittest.TestCase):
         """Test object with scientific notation numbers."""
         test_cases = [
             ('{"key": 1.23e4}', {"key": 1.23e4}),
-            ('{"key": 1.23E4}', {"key": 1.23E4}),
+            ('{"key": 1.23E4}', {"key": 1.23e4}),
             ('{"key": -1.23e-4}', {"key": -1.23e-4}),
-            ('{"key": 1.23e+4}', {"key": 1.23e+4})
+            ('{"key": 1.23e+4}', {"key": 1.23e4}),
         ]
         for json_input, expected in test_cases:
             self.parser = StreamJsonParser()  # Reset parser for each case
@@ -258,7 +309,7 @@ class TestStreamJsonParser(unittest.TestCase):
             ('{"key": -0}', {"key": -0}),
             ('{"key": 0.0}', {"key": 0.0}),
             ('{"key": 1e0}', {"key": 1e0}),
-            ('{"key": 1E-0}', {"key": 1E-0})
+            ('{"key": 1E-0}', {"key": 1e-0}),
         ]
         for json_input, expected in test_cases:
             self.parser = StreamJsonParser()  # Reset parser for each case
@@ -274,10 +325,10 @@ class TestStreamJsonParser(unittest.TestCase):
         self.assertEqual(result, {"key": 12})
 
         # Test partial float
-        # self.parser = StreamJsonParser()
-        # self.parser.consume('{"key": 12.')
-        # result = self.parser.get()
-        # self.assertEqual(result, {"key": 12})
+        self.parser = StreamJsonParser()
+        self.parser.consume('{"key": 12.')
+        result = self.parser.get()
+        self.assertEqual(result, {"key": 12})
 
         # Test partial scientific notation
         self.parser = StreamJsonParser()
@@ -292,13 +343,112 @@ class TestStreamJsonParser(unittest.TestCase):
             '{"key": 12.34.56}',  # Multiple decimals
             '{"key": 12ee4}',  # Double exponent
             '{"key": --123}',  # Double negative
-            '{"key": 12e4.5}'  # Decimal in exponent
+            '{"key": 12e4.5}',  # Decimal in exponent
         ]
         for json_input in invalid_cases:
             self.parser = StreamJsonParser()
             with self.assertRaises(StreamParserJSONDecodeError):
                 self.parser.consume(json_input)
                 self.parser.get()
+
+    def test_array_mixed_types(self):
+        """Test array with different types of values."""
+        self.parser.consume('[1, "string", true, null, 3.14, -42]')
+        result = self.parser.get()
+        self.assertEqual(result, [1, "string", True, None, 3.14, -42])
+
+    def test_array_nested_arrays(self):
+        """Test array containing other arrays."""
+        self.parser.consume("[[1, 2], [3, 4], []]")
+        result = self.parser.get()
+        self.assertEqual(result, [[1, 2], [3, 4], []])
+
+    def test_array_nested_objects(self):
+        """Test array containing objects."""
+        self.parser.consume('[{"a": 1}, {"b": 2}, {}]')
+        result = self.parser.get()
+        self.assertEqual(result, [{"a": 1}, {"b": 2}, {}])
+
+    def test_array_complex_nesting(self):
+        """Test array with complex nesting of arrays and objects."""
+        self.parser.consume('[{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]')
+        result = self.parser.get()
+        self.assertEqual(result, [{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]])
+
+    def test_array_whitespace(self):
+        """Test array with various whitespace patterns."""
+        test_cases = [
+            ("[  1  ,  2  ]", [1, 2]),
+            ("[\n1,\n2\n]", [1, 2]),
+            ("[\r1,\t2\r\n]", [1, 2]),
+            ("[ ]", []),
+        ]
+        for json_input, expected in test_cases:
+            self.parser = StreamJsonParser()
+            self.parser.consume(json_input)
+            result = self.parser.get()
+            self.assertEqual(result, expected)
+
+    def test_array_partial_complex(self):
+        """Test partial parsing of complex array structures."""
+        # Start with empty array in object
+        self.parser.consume('{"data": [')
+        result = self.parser.get()
+        self.assertEqual(result, {"data": []})
+
+        # Add nested object
+        self.parser.consume('{"nested": [1, 2]}')
+        result = self.parser.get()
+        self.assertEqual(result, {"data": [{"nested": [1, 2]}]})
+
+        # Add comma and start new item
+        self.parser.consume(', {"more": {')
+        result = self.parser.get()
+        self.assertEqual(result, {"data": [{"nested": [1, 2]}, {"more": {}}]})
+
+        # Complete the structure
+        self.parser.consume('"x": 3}}]}')
+        result = self.parser.get()
+        self.assertEqual(result, {"data": [{"nested": [1, 2]}, {"more": {"x": 3}}]})
+
+    def test_array_malformed(self):
+        """Test malformed array inputs."""
+        invalid_cases = [
+            "[,]",  # Empty element
+            "[1, , 2]",  # Missing element
+            "[1, 2,]",  # Trailing comma
+            "[1, 2]]",  # Extra closing bracket
+        ]
+        for json_input in invalid_cases:
+            self.parser = StreamJsonParser()
+            with self.assertRaises(StreamParserJSONDecodeError):
+                self.parser.consume(json_input)
+                self.parser.get()
+
+    def test_array_streaming_edge_cases(self):
+        """Test edge cases in streaming array parsing."""
+        # Test extremely small chunks
+        self.parser.consume("[")
+        result = self.parser.get()
+        self.assertEqual(result, [])
+
+        self.parser.consume('"')
+        self.parser.consume("t")
+        self.parser.consume("e")
+        self.parser.consume("s")
+        self.parser.consume("t")
+        self.parser.consume('"')
+        result = self.parser.get()
+        self.assertEqual(result, ["test"])
+
+        # Test multiple commas in chunks
+        self.parser.consume(", ")
+        self.parser.consume("1, ")
+        self.parser.consume("true, ")
+        self.parser.consume("null]")
+        result = self.parser.get()
+        self.assertEqual(result, ["test", 1, True, None])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,45 +10,9 @@ Example:
 """
 
 from config import logger
-from stream_parser import StreamParserJSONDecodeError, StreamJsonParser
+from stream_parser import StreamJsonParser
 
 if __name__ == "__main__":
     logger.info("starting JsonFlow ...")
     parser = StreamJsonParser()
-    try:
-        parser.consume('""')
-        logger.debug(parser.get())
-    except StreamParserJSONDecodeError:
-        pass
-    parser = StreamJsonParser()
-    parser.consume('{"key":')
-    logger.debug(parser.get())
-
-    # parser = StreamJsonParser()
-    # parser.consume('{"key": "')
-    # logger.debug(parser.get())
-
-    # parser = StreamJsonParser()
-    # parser.consume('{"')
-    # logger.debug(parser.get())
-    # parser.consume('key')
-    # logger.debug(parser.get())
-    # parser.consume('": ')
-    # parser.consume('"val')
-    # parser.consume('ue"}')
-    # logger.debug(parser.get())
-
-    # parser = StreamJsonParser()
-    # parser.consume('{"key": "val')
-    # logger.debug(parser.get())
-
-    # parser = StreamJsonParser()
-    # parser.consume('{"outer": {"inner')
-    # logger.debug(parser.get())
-    # logger.info("done ...")
-
-    parser = StreamJsonParser()
-    parser.consume('{ "values": [')
-    logger.debug(parser.get())
-    parser.consume('"test1", "test2"]}')
-    logger.debug(parser.get())
+    pass
