@@ -10,7 +10,7 @@ Example:
 """
 
 from config import logger
-from stream_parser import JSONDecodeError, StreamJsonParser
+from stream_parser import StreamParserJSONDecodeError, StreamJsonParser
 
 if __name__ == "__main__":
     logger.info("starting JsonFlow ...")
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     try:
         parser.consume('""')
         logger.debug(parser.get())
-    except JSONDecodeError:
+    except StreamParserJSONDecodeError:
         pass
     parser = StreamJsonParser()
     parser.consume('{"key":')

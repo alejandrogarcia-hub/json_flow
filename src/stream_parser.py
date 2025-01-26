@@ -27,17 +27,17 @@ from config import logger
 ParseResult = Union[tuple[int, Optional[str], Literal[True]], Literal[False]]
 
 
-class JSONDecodeError(ValueError):
+class StreamParserJSONDecodeError(ValueError):
     """Base class for JSON parsing errors."""
     pass
 
 
-class PartialJSON(JSONDecodeError):
+class PartialJSON(StreamParserJSONDecodeError):
     """Error for incomplete JSON data."""
     pass
 
 
-class MalformedJSON(JSONDecodeError):
+class MalformedJSON(StreamParserJSONDecodeError):
     """Error for invalid JSON format."""
     pass
 
@@ -99,9 +99,9 @@ class StreamJsonParser:
             # add to chunks
             self.chunks.append(json_str)
             self._parse("".join(self.chunks))
-        except JSONDecodeError as e:
+        except StreamParserJSONDecodeError as e:
             logger.error(e)
-            raise JSONDecodeError(e)
+            raise StreamParserJSONDecodeError(e)
 
     def _parse(self, json_str: str) -> None:
         """Parse the complete JSON string.
@@ -119,13 +119,8 @@ class StreamJsonParser:
             self.chunks = []
             raise MalformedJSON("json must start with { or [")
 
-        i, last_char, close = self._parse_value(json_str)
-        if close:
-            self.current_valid_json = f"{json_str[:i]}{last_char}"
-            return
-
-        if not close and last_char:
-            self.current_valid_json = f"{json_str[:i]}{last_char}"
+        i, last_char, _ = self._parse_value(json_str)
+        self.current_valid_json = f"{json_str[:i]}{last_char}"
 
     def _parse_value(self, json_str: str) -> ParseResult:
         """Parse a JSON value.
@@ -158,6 +153,10 @@ class StreamJsonParser:
         if current_char == '"':
             # JSON flow, string
             return self._parse_string(json_str)
+
+        if current_char in "0123456789-":
+            # JSON flow, number
+            return self._parse_numbers(json_str)
 
         raise MalformedJSON(f"string {json_str} does not follow json spec")
 
@@ -213,10 +212,11 @@ class StreamJsonParser:
                 j = _find_non_whitespace_index(json_str, from_index=j)
 
                 # JSON flow, value
-                sj, last_char, is_closed = self._parse_value(json_str[j:])
-                if not is_closed:
+                sj, last_char, closed = self._parse_value(json_str[j:])
+                if not closed:
                     # we can have impartial values
-                    return j + sj, "{}{}".format(last_char, "}"), False
+                    close_str = "{}{}".format(last_char, "}") if last_char else "}"
+                    return j + sj, close_str, False
 
                 j += sj + 1
                 # at this point we have a value, therefore, we can add the key and value to the response
@@ -232,7 +232,7 @@ class StreamJsonParser:
                     )
 
                 if json_str[j] == "}":
-                    return i, "}", True
+                    return j, "}", True
 
                 # keep moving, another round of object flow
                 j += 1
@@ -245,6 +245,10 @@ class StreamJsonParser:
 
     def _parse_string(self, json_str: str) -> ParseResult:
         """Parse a JSON string value.
+
+        This method handles parsing of JSON string values, including escaped characters
+        like \n, \t, \r, \", etc. It properly skips over escaped characters when
+        looking for the string terminator.
 
         Args:
             json_str: The JSON string to parse.
@@ -260,11 +264,35 @@ class StreamJsonParser:
         """
         i = 1
         while i < len(json_str):
+            # Check for escape character
+            if json_str[i] == '\\':
+                # Skip the next character as it's escaped
+                i += 2
+                continue
+            
             if json_str[i] == '"':
                 return i, None, True
 
             i += 1
         return i, '"', False
+
+    def _parse_numbers(self, json_str: str) -> ParseResult:
+        i = 1
+        length = len(json_str)
+
+        # forward
+        while i < length and json_str[i] in "1234567890.-+eE":
+            i += 1
+
+        j = i
+        modified = False
+
+        # backward
+        while json_str[i - 1] in ".-+eE":
+            modified = True
+            i -= 1
+        
+        return i - 1 if not modified and i < length else i, None, j < length
 
     def get(self) -> Optional[dict[str, Any]]:
         """Get the current valid JSON object.
@@ -275,4 +303,9 @@ class StreamJsonParser:
         """
         if not self.current_valid_json:
             return None
-        return json.loads(self.current_valid_json)
+        try:
+            return json.loads(self.current_valid_json)
+        except json.decoder.JSONDecodeError as e:
+            msg = "we received an invlaid json from the stream"
+            logger.error(msg)
+            raise StreamParserJSONDecodeError(msg)
