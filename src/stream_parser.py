@@ -159,6 +159,7 @@ class StreamJsonParser:
         if not json_str:
             return
 
+        # json can only start as an object or an array
         if json_str[0] != "{" and json_str[0] != "[":
             self.chunks = []
             raise MalformedJSON("json must start with { or [")
@@ -202,13 +203,13 @@ class StreamJsonParser:
         if current_char == "[":
             return self._parse_array(json_str)
 
-        if current_char in "0123456789":
-            # JSON flow, number
-            return self._parse_numbers(json_str)
-
         if current_char == '"':
             # JSON flow, string
             return self._parse_string(json_str)
+
+        if current_char in "0123456789":
+            # JSON flow, number
+            return self._parse_numbers(json_str)
 
         if current_char == "-":
             if len(json_str) == 1:
@@ -311,6 +312,7 @@ class StreamJsonParser:
                 sj, last_char, is_closed = self._parse_string(json_str[j:])
                 if not is_closed:
                     # partial close at i
+                    # keys are only added once we know the value type
                     return i, "}", False
 
                 # advanced over the whole string
@@ -326,6 +328,7 @@ class StreamJsonParser:
 
                 j += 1
                 # JSON flow, whitespace
+                # Not part of the json object flow, but is allow
                 j = _find_non_whitespace_index(json_str, from_index=j)
 
                 # JSON flow, value
@@ -341,6 +344,7 @@ class StreamJsonParser:
                 i = j
 
                 # JSON flow, whitespace
+                # Not part of the json object flow, but is allow
                 j = _find_non_whitespace_index(json_str, from_index=j)
                 if j >= len(json_str):
                     # partial close at j
@@ -390,6 +394,9 @@ class StreamJsonParser:
             IndexError: If the JSON string is incomplete.
             StreamParserJSONDecodeError: If array format violates JSON spec.
         """
+        if len(json_str) == 1:
+            return 1, "]", False
+
         i = 1
         j = 1
         try:
@@ -412,6 +419,7 @@ class StreamJsonParser:
                 i = j
 
                 # JSON flow, whitespace
+                # Not part of the json object flow, but is allow
                 j = _find_non_whitespace_index(json_str, from_index=j)
                 # we know the value therefore we should be able to close the array
                 if j >= len(json_str):
@@ -428,23 +436,6 @@ class StreamJsonParser:
                 else:
                     raise MalformedJSON(
                         f"string {json_str} shall be comma or close bracket"
-                    )
-
-                j = _find_non_whitespace_index(json_str, from_index=j)
-                # we know the value therefore we should be able to close the array
-                if j >= len(json_str):
-                    # partial close at i
-                    # here we close it at i otherwise
-                    # it can only have whitespaces after a comma
-                    # and that is not a valid json
-                    return i, "]", False
-
-                current_char = json_str[j]
-                # we cannot have a comma and the arrays ends
-                # as per spec, it is not a valid json
-                if current_char == "]":
-                    raise StreamParserJSONDecodeError(
-                        "not a valid json for array values"
                     )
 
         except IndexError:
