@@ -147,8 +147,7 @@ class StreamJsonParser:
 
         # JSON value, array
         if current_char == "[":
-            # @todo implement for array
-            pass
+            return self._parse_array(json_str)
 
         if current_char == '"':
             # JSON flow, string
@@ -241,7 +240,60 @@ class StreamJsonParser:
             # When the value type of the key is not known, then we close the current object
             return i, "}", True
 
-        return i, None, False
+    def _parse_array(self, json_str: str) -> ParseResult:
+        """Parse a JSON array value.
+        
+        This method handles parsing of JSON arrays, including partial arrays.
+        It supports both complete and incomplete array inputs, maintaining
+        state between partial inputs.
+
+        Args:
+            json_str: The JSON string to parse.
+
+        Returns:
+            ParseResult: A tuple containing the parsing result:
+                - If parsing is complete: (index, closing_chars, True)
+                - If parsing is partial: (index, closing_chars, False)
+                - If parsing failed: False
+
+        Raises:
+            MalformedJSON: If the JSON string doesn't follow JSON specification.
+            IndexError: If the JSON string is incomplete.
+        """
+        i = 1
+        j = 1
+        try:
+            while True:
+                j = _find_non_whitespace_index(json_str, from_index=j)
+                current_char = json_str[j]
+
+                if current_char == "]":
+                    return j, "]", True
+
+                sj, last_char, is_closed = self._parse_value(json_str[j:])
+                if not is_closed:
+                    return j + sj, "{}{}".format(last_char, "]"), False
+
+                j += sj + 1
+                # at this point we have a value, therefore, we can add the key and value to the response
+                # update i so we can include the new key value.
+                i = j
+
+                # JSON flow, whitespace
+                j = _find_non_whitespace_index(json_str, from_index=j)
+                # JSON flow, comma or closed bracket
+                if json_str[j] == "]":
+                    return i, "]", True
+
+                if json_str[j] == ",":
+                    j += 1
+                else:
+                    raise MalformedJSON(
+                        f"string {json_str} shall be comma or close bracket"
+                    )
+        
+        except IndexError:
+            return i, "]", False
 
     def _parse_string(self, json_str: str) -> ParseResult:
         """Parse a JSON string value.
