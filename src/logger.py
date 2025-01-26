@@ -13,7 +13,7 @@ import logging
 import logging.handlers
 import os
 
-from pythonjsonlogger import jsonlogger
+from pythonjsonlogger import json
 
 
 class LogManager:
@@ -26,7 +26,7 @@ class LogManager:
     Attributes:
         logger (logging.Logger): Configured logger instance.
         log_dir (str): Directory path for log files.
-        formatter (jsonlogger.JsonFormatter): JSON formatter for log messages.
+        formatter (json.JsonFormatter): JSON formatter for log messages.
 
     Note:
         Log files are automatically rotated based on size with backup retention.
@@ -34,7 +34,7 @@ class LogManager:
 
     logger: logging.Logger
     log_dir: str
-    formatter: jsonlogger.JsonFormatter
+    formatter: json.JsonFormatter
 
     def __init__(
         self,
@@ -83,7 +83,7 @@ class LogManager:
 
         self.logger: logging.Logger = logging.getLogger(app_name)
         self.logger.setLevel(level)
-        self.formatter: jsonlogger.JsonFormatter = jsonlogger.JsonFormatter(
+        self.formatter: json.JsonFormatter = json.JsonFormatter(
             fmt="%(asctime)s %(levelname)s %(filename)s %(name)s %(funcName)s %(lineno)s %(message)s",
             rename_fields={
                 "asctime": "timestamp",
