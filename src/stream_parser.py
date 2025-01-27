@@ -16,7 +16,7 @@ Classes:
     StreamJsonParser: Main class for streaming JSON parsing.
 """
 
-from typing import Literal, Optional, Union
+from typing import Literal, Optional
 
 from config import logger
 
@@ -25,7 +25,7 @@ from config import logger
 # - tuple with index and True
 # - False if no further parsing is possible
 # - True means, is a valid json therefore close it.
-ParseResult = Union[tuple[int, Optional[str], Literal[True]], Literal[False]]
+ParseResult = tuple[int, Optional[str], Literal[True]]
 
 
 class StreamParserJSONDecodeError(ValueError):
