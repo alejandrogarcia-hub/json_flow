@@ -15,8 +15,9 @@ Classes:
     MalformedJSON: Error for invalid JSON format.
     StreamJsonParser: Main class for streaming JSON parsing.
 """
-
-from typing import Literal, Optional
+import json
+from json import JSONDecodeError
+from typing import Any, Literal, Optional
 
 from config import logger
 
@@ -536,14 +537,20 @@ class StreamJsonParser:
 
         return i - 1 if not modified and i < length else i, None, j < length
 
-    def get(self) -> str:
+    def get(self) -> Any:
         """Get the current valid JSON object.
 
         Attempts to parse the accumulated JSON string into a Python object.
         Handles both complete and partial JSON structures.
 
         Returns:
-            str: The parsed JSON object if available,
-                None if no valid JSON is available.
+            Any: The parsed JSON object, or None if the JSON string is empty.
         """
-        return self.current_valid_json
+        if not self.current_valid_json:
+            return None
+        try:
+            return json.loads(self.current_valid_json)
+        except JSONDecodeError as e:
+            raise StreamParserJSONDecodeError(
+                f"invalid json"
+            )
