@@ -179,3 +179,25 @@ The parser provides detailed error handling through custom exceptions:
 - `StreamParserJSONDecodeError`: Base class for JSON parsing errors
 - `PartialJSON`: Indicates incomplete JSON data
 - `MalformedJSON`: Indicates invalid JSON format
+
+## Performance
+
+The `benchmarks` directory contains performance evaluation tools and results for the `StreamJsonParser` class. The main evaluation notebook `performance_evaluation.ipynb` measures parsing performance across different scenarios:
+
+- **Data Complexity**: Tests JSON structures with varying depths (2, 4, 6, 8, 10 levels)
+- **Data Volume**: Each depth is tested with increasing amounts of JSON objects (10 to 100)
+- **Statistical Rigor**: Multiple runs per configuration to calculate mean, standard deviation, and confidence intervals
+
+### Results
+
+The performance analysis shows how parsing time scales with both JSON complexity (depth) and volume:
+
+![Performance Results](benchmarks/performance_results.png)
+
+The benchmark notebook includes detailed statistical analysis including:
+- Mean runtime per configuration
+- Standard deviation
+- 95% confidence intervals
+- Visualization of performance trends
+
+To run the benchmarks yourself, execute the Jupyter notebook in the `benchmarks` directory.
