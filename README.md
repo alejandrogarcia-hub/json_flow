@@ -1,6 +1,6 @@
 # JSON Flow
 
-A streaming JSON parser that handles partial and incomplete JSON data.
+A streaming JSON parser, designed to parse incomplete JSON streams from LLM outputs in real-time, providing access to the current parsed state at any moment.
 
 ## Features
 
@@ -61,37 +61,66 @@ pip install -r requirements-dev.txt
 pip install -r requirements-dev.txt
 ```
 
-## Usage
+## Usage Examples
+
+### Basic Usage
 
 ```python
 from stream_parser import StreamJsonParser
 
-# Create a parser instance
+# Initialize the parser
 parser = StreamJsonParser()
 
-# Feed partial JSON data
-parser.consume('{"key": ')
-parser.consume('"value"}')
+# Parse a complete JSON object
+parser.consume('{"name": "John", "age": 30}')
+result = parser.get()
+print(result)  # '{"name": "John", "age": 30}'
 
-# Get the parsed result
-result = parser.get()  # Returns {"key": "value"}
+# Parse a complete JSON array
+parser.consume('[1, 2, 3, 4]')
+result = parser.get()
+print(result)  # '[1, 2, 3, 4]'
 ```
 
-### Handling Partial Data
-
-The parser can handle incomplete JSON structures:
+### Handling Partial JSON
 
 ```python
+# Initialize the parser
 parser = StreamJsonParser()
 
-# Feed incomplete data
-parser.consume('{"outer": {"inner')
-result = parser.get()  # Returns {}
+# Receive partial JSON data
+parser.consume('{"user": "alice", "data": [1, 2')
+# At this point, no complete JSON is available
+print(parser.get())  # None
 
-# Feed more data
-parser.consume('": "value"}}')
-result = parser.get()  # Returns {"outer": {"inner": "value"}}
+# Receive more data
+parser.consume(', 3, 4]}')
+# Now we have a complete JSON
+result = parser.get()
+print(result)  # '{"user": "alice", "data": [1, 2, 3, 4]}'
 ```
+
+### Error Handling
+
+```python
+from stream_parser import StreamJsonParser, StreamParserJSONDecodeError
+
+parser = StreamJsonParser()
+
+try:
+    # Try to parse invalid JSON
+    parser.consume('{"invalid": }')
+except StreamParserJSONDecodeError as e:
+    print(f"Error parsing JSON: {e}")
+
+# Handle multiple root elements (not allowed)
+try:
+    parser.consume('{}{}')  # Two root objects
+except StreamParserJSONDecodeError as e:
+    print(f"Error: Multiple root elements are not allowed - {e}")
+```
+
+For more examples and detailed usage, check the test suite in `tests/test_stream_parser.py`.
 
 ## Development
 
