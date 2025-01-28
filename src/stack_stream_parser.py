@@ -1,25 +1,36 @@
 from enum import IntEnum
 from typing import Any, Optional, Union
 
-from pydantic import conbytes
-
 from config import logger
 
 
 class StreamParserJSONDecodeError(ValueError):
-    """Base class for JSON parsing errors in the stream parser."""
+    """Base class for JSON parsing errors in the stream parser.
+
+    This is the parent class for all JSON parsing related exceptions
+    in the streaming parser implementation.
+    """
 
     pass
 
 
 class PartialJSON(StreamParserJSONDecodeError):
-    """Error indicating incomplete JSON data."""
+    """Error indicating incomplete JSON data.
+
+    Raised when the parser encounters the end of input while
+    in the middle of a valid JSON structure.
+    """
 
     pass
 
 
 class MalformedJSON(StreamParserJSONDecodeError):
-    """Error indicating invalid JSON format."""
+    """Error indicating invalid JSON format.
+
+    Raised when the parser encounters JSON that violates the
+    JSON specification, such as invalid literals or mismatched
+    brackets.
+    """
 
     pass
 
@@ -28,12 +39,12 @@ class ParserState(IntEnum):
     """Enum representing different states during JSON parsing.
 
     Attributes:
-        DICT_WAITING_KEY: State when parser expects a dictionary key
-        DICT_WAITING_COLON: State when parser expects a colon after key
-        DICT_WAITING_VALUE: State when parser expects a value in dictionary
-        DICT_WAITING_COMMA: State when parser expects a comma or end of dictionary
-        LIST_WAITING_VALUE: State when parser expects a value in list
-        LIST_WAITING_COMMA: State when parser expects a comma or end of list
+        OBJECT_WAITING_KEY: Parser expects a dictionary key.
+        OBJECT_WAITING_COLON: Parser expects a colon after key.
+        OBJECT_WAITING_VALUE: Parser expects a value in dictionary.
+        OBJECT_WAITING_COMMA: Parser expects a comma or end of dictionary.
+        ARRAY_WAITING_VALUE: Parser expects a value in array.
+        ARRAY_WAITING_COMMA: Parser expects a comma or end of array.
     """
 
     OBJECT_WAITING_KEY = 1
@@ -45,6 +56,21 @@ class ParserState(IntEnum):
 
 
 class Container:
+    """Container class for tracking JSON object/array parsing state.
+
+    Args:
+        container (Union[dict, list]): The container object (dict or list).
+        state (ParserState): Current parsing state for this container.
+        last_key (Optional[str]): Last parsed key in dictionary context.
+        last_value_partial (Optional[bool]): Whether last value was partial.
+
+    Attributes:
+        container (Union[dict, list]): The container object being built.
+        state (ParserState): Current parsing state.
+        last_key (Optional[str]): Most recently parsed key (for dictionaries).
+        last_value_partial (Optional[bool]): Tracks if last value was partial.
+    """
+
     def __init__(
         self,
         container: Union[dict | list],
@@ -96,17 +122,28 @@ def _find_non_whitespace_index(buffer: [], index: int) -> int:
 
 
 class StreamJsonParser:
-    """
-    A single-pass, stack-based streaming JSON parser.
-    - We tokenize the input incrementally.
-    - We maintain a stack of containers (dict or list) plus a state.
-    - Once the top-level container is closed, we keep it as `root`.
-    - Partial keys do not appear. Partial values (strings) do appear.
-    """
+    """A single-pass, stack-based streaming JSON parser.
 
-    # Different states for dict parsing or list parsing
+    This parser processes JSON data incrementally, maintaining state between chunks
+    of input. It uses a stack-based approach to track nested structures and their
+    parsing states.
+
+    Attributes:
+        buffer (list): Characters that haven't been tokenized yet.
+        stack (list[Container]): Stack of containers (dict/list) with their states.
+        root (Any): Completed top-level object/array, if one exists.
+        last_index (int): Last processed index in the buffer.
+        in_string (bool): Whether currently reading a string literal.
+        string_delim (str): String delimiter (always " in JSON).
+        unicode_esc (bool): Whether parsing a "\\u" escape sequence.
+        esc_count (int): Number of hex digits read in unicode escape.
+        partial_token (list[str]): Characters of token being processed.
+        token_type (Optional[str]): Current token type ('string', 'number', etc.).
+        partial_key (Optional[str]): Partially recognized dictionary key.
+    """
 
     def __init__(self):
+        """Initialize a new StreamJsonParser instance."""
         # The buffer of characters that haven't been tokenized yet
         self.buffer = []
         # The stack: each element is (container, context_state, last_key).
@@ -137,17 +174,12 @@ class StreamJsonParser:
     def consume(self, json_str: str) -> None:
         """Consume a chunk of JSON data for streaming parse.
 
-        This method accepts partial JSON data and maintains state between chunks.
-        It validates basic JSON structure by checking brace/bracket balance and
-        updates the internal state for partial parsing.
-
         Args:
-            json_str: A string containing a chunk of JSON data.
+            json_str (str): A chunk of JSON data to process.
 
         Raises:
-            StreamParserJSONDecodeError: If the JSON data is invalid, such as having
-                more closing braces/brackets than opening ones, or other malformed
-                JSON structures.
+            MalformedJSON: If the JSON structure is invalid.
+            PartialJSON: If the JSON data is incomplete but valid so far.
         """
         try:
             logger.debug({"input": json_str})
@@ -158,8 +190,16 @@ class StreamJsonParser:
             logger.error(e)
             raise StreamParserJSONDecodeError(e)
 
-    def _parse(self) -> None:
-        """Parse the complete JSON string."""
+    def _parse(self):
+        """Parse the complete JSON string in the buffer.
+
+        This method processes the buffer character by character, handling different
+        JSON elements and maintaining the parser state.
+
+        Raises:
+            MalformedJSON: If the JSON structure is invalid.
+            PartialJSON: If the JSON data is incomplete but valid so far.
+        """
         i = self.last_index
         while i < len(self.buffer):
             i = _find_non_whitespace_index(self.buffer, i)
@@ -237,10 +277,10 @@ class StreamJsonParser:
             self._commit_partial_value("".join(self.partial_token))
 
     def _start_string(self):
-        """
-        Handle encountering '"'
-        Push a new (string, STRING_WAITING_VALUE, None) onto the stack
-        or if stack is empty, this is the new root container.
+        """Initialize string parsing state when encountering a quote.
+
+        Sets up the parser state for processing a string literal, including
+        resetting relevant flags and buffers.
         """
         self.in_string = True
         self.token_type = "string"
@@ -252,9 +292,16 @@ class StreamJsonParser:
         self.token_type = None
 
     def _read_string(self, buffer: str, index: int) -> tuple[int, bool]:
-        """
-        Attempt to read the next character c.
-        Return True if consumed, False if we must stop because of partial data.
+        """Process characters in a string literal.
+
+        Args:
+            buffer (str): Input buffer containing the string content.
+            index (int): Starting position in the buffer.
+
+        Returns:
+            tuple[int, bool]: A tuple containing:
+                - The new buffer position after processing
+                - Whether the string was completed (True) or partial (False)
         """
         i = index
         while i < len(buffer):
@@ -274,12 +321,10 @@ class StreamJsonParser:
 
         return i, False
 
-
     def _start_object(self):
-        """
-        Handle encountering '{'
-        Push a new (dict, DICT_WAITING_KEY, None) onto the stack
-        or if stack is empty, this is the new root container.
+        """Initialize object parsing state when encountering '{'.
+
+        Creates a new dictionary container and pushes it onto the stack.
         """
         obj = {}
         # error case
@@ -431,13 +476,6 @@ class StreamJsonParser:
             # If it's a valid number char
             if c in "0123456789+-.eE":
                 self.partial_token.append(c)
-            # else:
-            #     # The number token ended. We must commit what we have, then re-process c
-            #     # So let's step back one char in the main parser, to handle c as structural or next token
-            #     # We'll finalize the number now.
-            #     # most probably we will never get in here
-            #     if not self._commit_token():
-            #         raise MalformedJSON("Invalid numeric token")
 
             return True
 
@@ -447,19 +485,6 @@ class StreamJsonParser:
             # Check if we definitely recognized or definitely invalid
             st = "".join(self.partial_token)
             if st in ("true", "false", "null"):
-                # We have recognized the entire literal
-                # But we need to see if it's fully ended (the next char is not a letter).
-                # e.g. "truex" is invalid. We'll require next char to not be [a-zA-Z0-9].
-                # But in streaming scenario, we might not have next char yet => partial.
-                # We'll assume if we read the whole literal, we commit now, and if the next char is invalid,
-                # we'll catch it in the next iteration.
-                # We'll commit if the next char does not continue the literal
-                # For safety, we can look ahead. But let's do a simpler approach: if we see the next
-                # char is a structural one, we commit now. If partial, we'll do a break. This is
-                # simpler for demonstration.
-                # if not self._commit_token():
-                #     raise MalformedJSON("Invalid numeric token")
-
                 return True  # We'll finalize in next step if we see a structural delimiter.
 
             # checks if the current partial token (st) could potentially become one of the valid literals.
@@ -609,14 +634,17 @@ class StreamJsonParser:
                 return
 
             if container.state == ParserState.OBJECT_WAITING_VALUE:
-                if container.last_value_partial and container.last_key in container.container:
+                if (
+                    container.last_value_partial
+                    and container.last_key in container.container
+                ):
                     container.container[container.last_key] += value
                 else:
                     container.container[container.last_key] = value
 
                 container.last_value_partial = True
                 return
-            
+
             raise MalformedJSON(
                 f"not expecting an object value, current state {container.state}"
             )
@@ -630,17 +658,17 @@ class StreamJsonParser:
             container.container[-1] += value
         else:
             container.container.append(value)
-        
+
         container.last_value_partial = True
-        
 
     def get(self) -> Any:
-        """
-        Return the partial (or complete) top-level structure so far, if any.
-        - If top-level is recognized and closed, return that structure.
-        - If top-level is not closed, return the partial structure on the top of the stack.
-          That means we reconstruct the partial containers from stack.
-        - If no structure at all, return None.
+        """Retrieve the current parse result.
+
+        Returns:
+            Any: The parsed JSON structure. Could be:
+                - Complete top-level structure if parsing is done
+                - Partial structure if parsing is incomplete
+                - None if no structure has been recognized yet
         """
         # If we have a finalized root and no stack, that’s a fully closed top-level object/array
         if self.root is not None and not self.stack:
