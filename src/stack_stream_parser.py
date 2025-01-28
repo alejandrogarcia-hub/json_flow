@@ -1,3 +1,11 @@
+"""Stack-based streaming JSON parser module.
+
+This module provides a streaming JSON parser that can process data incrementally,
+making it suitable for parsing large JSON documents or streaming JSON data.
+The parser maintains state between chunks of input and supports partial parsing
+of JSON structures.
+"""
+
 from enum import IntEnum
 from typing import Any, Optional, Union
 
@@ -7,8 +15,14 @@ from config import logger
 class StreamParserJSONDecodeError(ValueError):
     """Base class for JSON parsing errors in the stream parser.
 
-    This is the parent class for all JSON parsing related exceptions
-    in the streaming parser implementation.
+    This class serves as the base exception for all JSON parsing related errors
+    in the stream parser implementation.
+
+    Args:
+        message: The error message describing the parsing failure.
+
+    Note:
+        Inherits from ValueError to maintain compatibility with standard JSON decode errors.
     """
 
     pass
@@ -17,8 +31,12 @@ class StreamParserJSONDecodeError(ValueError):
 class PartialJSON(StreamParserJSONDecodeError):
     """Error indicating incomplete JSON data.
 
-    Raised when the parser encounters the end of input while
-    in the middle of a valid JSON structure.
+    Args:
+        message: The error message describing the incomplete JSON structure.
+
+    Note:
+        Raised when parsing ends with a valid but incomplete JSON structure, such as
+        an unclosed object or array, or a partial string/number.
     """
 
     pass
@@ -27,24 +45,34 @@ class PartialJSON(StreamParserJSONDecodeError):
 class MalformedJSON(StreamParserJSONDecodeError):
     """Error indicating invalid JSON format.
 
-    Raised when the parser encounters JSON that violates the
-    JSON specification, such as invalid literals or mismatched
-    brackets.
+    Args:
+        message: The error message describing the malformed JSON.
+
+    Note:
+        Raised when encountering JSON that violates the specification, including:
+        - Invalid literals or numbers
+        - Mismatched brackets/braces
+        - Missing commas or colons
+        - Invalid value types
     """
 
     pass
 
 
 class ParserState(IntEnum):
-    """Enum representing different states during JSON parsing.
+    """States for tracking JSON parsing context.
+
+    This enum defines the possible states of the parser during JSON processing.
+    Used to maintain the parser's position within nested JSON structures and
+    determine valid next tokens.
 
     Attributes:
-        OBJECT_WAITING_KEY: Parser expects a dictionary key.
-        OBJECT_WAITING_COLON: Parser expects a colon after key.
-        OBJECT_WAITING_VALUE: Parser expects a value in dictionary.
-        OBJECT_WAITING_COMMA: Parser expects a comma or end of dictionary.
-        ARRAY_WAITING_VALUE: Parser expects a value in array.
-        ARRAY_WAITING_COMMA: Parser expects a comma or end of array.
+        OBJECT_WAITING_KEY: Expecting a string key in an object.
+        OBJECT_WAITING_COLON: Expecting a colon after an object key.
+        OBJECT_WAITING_VALUE: Expecting a value after a colon in an object.
+        OBJECT_WAITING_COMMA: Expecting a comma or closing brace after a value.
+        ARRAY_WAITING_VALUE: Expecting any value in an array.
+        ARRAY_WAITING_COMMA: Expecting a comma or closing bracket after a value.
     """
 
     OBJECT_WAITING_KEY = 1
@@ -55,54 +83,30 @@ class ParserState(IntEnum):
     ARRAY_WAITING_COMMA = 6
 
 
-class Container:
-    """Container class for tracking JSON object/array parsing state.
+Container = tuple[Union[dict, list], ParserState, Optional[str], bool]
+"""Type alias for parser container state.
+
+A tuple containing:
+    - container (Union[dict, list]): The current container being parsed
+    - state (ParserState): Current parsing state
+    - key (Optional[str]): Current object key being processed
+    - is_partial (bool): Whether the current value is partial
+"""
+
+
+def _find_non_whitespace_index(buffer: list[str], index: int) -> int:
+    """Finds the next non-whitespace character position in the buffer.
 
     Args:
-        container (Union[dict, list]): The container object (dict or list).
-        state (ParserState): Current parsing state for this container.
-        last_key (Optional[str]): Last parsed key in dictionary context.
-        last_value_partial (Optional[bool]): Whether last value was partial.
-
-    Attributes:
-        container (Union[dict, list]): The container object being built.
-        state (ParserState): Current parsing state.
-        last_key (Optional[str]): Most recently parsed key (for dictionaries).
-        last_value_partial (Optional[bool]): Tracks if last value was partial.
-    """
-
-    def __init__(
-        self,
-        container: Union[dict | list],
-        state: ParserState,
-        last_key: Optional[str],
-        last_value_partial: Optional[bool] = False,
-    ) -> None:
-        """
-        container: object or array
-        state: current state
-        last_key: last key in dictionary
-        """
-        self.container = container
-        self.state = state
-        self.last_key = last_key
-        self.last_value_partial = last_value_partial
-
-
-def _find_non_whitespace_index(buffer: [], index: int) -> int:
-    """Find the index of the first non-whitespace character.
-
-    Scans the input string starting from the specified index to find
-    the first character that is not considered whitespace according to
-    the JSON specification (space, horizontal tab, line feed, or carriage return).
-
-    Args:
-        buffer: Array of chars
-        index: Starting index for the search. Defaults to 0.
+        buffer: List of characters to scan.
+        index: Starting position for the scan.
 
     Returns:
-        int: Index of the first non-whitespace character. If no non-whitespace
-            character is found, returns the length of the string.
+        Index of the first non-whitespace character, or len(buffer) if none found.
+
+    Note:
+        Scans forward from the given index, skipping over JSON whitespace characters
+        (space, tab, newline, carriage return).
     """
     while index < len(buffer):
         char = buffer[index]
@@ -122,24 +126,28 @@ def _find_non_whitespace_index(buffer: [], index: int) -> int:
 
 
 class StreamJsonParser:
-    """A single-pass, stack-based streaming JSON parser.
+    """Incremental JSON parser that processes data in chunks.
 
-    This parser processes JSON data incrementally, maintaining state between chunks
-    of input. It uses a stack-based approach to track nested structures and their
-    parsing states.
+    A streaming parser that can handle JSON data fed in multiple chunks, maintaining
+    state between calls. Supports partial values and nested structures.
+
+    The parser uses a stack-based approach to track nested objects and arrays,
+    allowing for incremental processing of arbitrarily complex JSON structures.
 
     Attributes:
-        buffer (list): Characters that haven't been tokenized yet.
-        stack (list[Container]): Stack of containers (dict/list) with their states.
-        root (Any): Completed top-level object/array, if one exists.
-        last_index (int): Last processed index in the buffer.
-        in_string (bool): Whether currently reading a string literal.
-        string_delim (str): String delimiter (always " in JSON).
-        unicode_esc (bool): Whether parsing a "\\u" escape sequence.
-        esc_count (int): Number of hex digits read in unicode escape.
-        partial_token (list[str]): Characters of token being processed.
-        token_type (Optional[str]): Current token type ('string', 'number', etc.).
-        partial_key (Optional[str]): Partially recognized dictionary key.
+        buffer: Unprocessed characters from input chunks.
+        stack: Stack tracking nested structures and their states.
+        root: Completed top-level JSON structure, if parsing is complete.
+        last_index: Position of last processed character in buffer.
+        partial_token: Characters of the current token being built.
+        token_type: Type of token being parsed ('string', 'number', 'literal', or None).
+
+    Example:
+        >>> parser = StreamJsonParser()
+        >>> parser.consume('{"name": "Jo')
+        >>> print(parser.get())  # {'name': 'Jo'}
+        >>> parser.consume('hn"}')
+        >>> print(parser.get())  # {'name': 'John'}
     """
 
     def __init__(self):
@@ -155,31 +163,26 @@ class StreamJsonParser:
         self.root = None
         self.last_index = 0
         # For partial tokens
-        self.in_string: bool = False  # Are we currently reading a string literal?
-        self.string_delim: str = (
-            '"'  # Only double quotes in JSON, but left as a variable for clarity
-        )
-        self.unicode_esc: bool = False  # Are we parsing a "\u" escape?
-        self.esc_count: int = 0  # How many hex digits read in a unicode escape
-        self.partial_token: list[
-            str
-        ] = []  # Characters of a token in progress (string, number, etc.)
+        self.partial_token: list[str] = (
+            []
+        )  # Characters of a token in progress (string, number, etc.)
         self.token_type: Optional[str] = (
             None  # 'string', 'number', 'true', 'false', 'null', or None if not sure
         )
-
-        # For partial recognized name in dictionary
-        self.partial_key: Optional[str] = None
 
     def consume(self, json_str: str) -> None:
         """Consume a chunk of JSON data for streaming parse.
 
         Args:
-            json_str (str): A chunk of JSON data to process.
+            json_str: A chunk of JSON data to process.
 
         Raises:
             MalformedJSON: If the JSON structure is invalid.
             PartialJSON: If the JSON data is incomplete but valid so far.
+
+        Note:
+            This method processes the input chunk and updates the internal parser state.
+            It can be called multiple times with consecutive chunks of JSON data.
         """
         try:
             logger.debug({"input": json_str})
@@ -199,6 +202,13 @@ class StreamJsonParser:
         Raises:
             MalformedJSON: If the JSON structure is invalid.
             PartialJSON: If the JSON data is incomplete but valid so far.
+
+        Note:
+            This is an internal method that implements the core parsing logic.
+            It processes characters in the buffer until either:
+            - The buffer is exhausted
+            - A partial token is encountered
+            - An error occurs
         """
         i = self.last_index
         while i < len(self.buffer):
@@ -212,6 +222,7 @@ class StreamJsonParser:
                 # if we were processing some esle then commit
                 # case for true, false, null, numbers
                 if self.token_type is not None and not self._commit_token():
+                    logger.error("invalid partial token before state transition")
                     raise MalformedJSON("invalid partial token before state transition")
 
                 if current_char == "{":
@@ -231,15 +242,17 @@ class StreamJsonParser:
                 continue
 
             # we are parsing a string
-            if self.in_string:
+            if self.token_type == "string":
                 i, completed = self._read_string(self.buffer, i)
                 if completed:
-                    self._end_string()
+                    self._commit_value("".join(self.partial_token))
+                    self.token_type = None
                 # we need to update current_char
                 continue
 
             if current_char == '"':
-                self._start_string()
+                self.token_type = "string"
+                self.partial_token = []
                 i += 1
             else:
                 # Possibly part of a number or 'true', 'false', 'null'
@@ -269,39 +282,27 @@ class StreamJsonParser:
                 i += 1
 
         self.last_index = i
-        if self.in_string:
+        if self.token_type == "string":
             # we do accept partial values
             self._commit_partial_value("".join(self.partial_token))
 
         if self.token_type and self.token_type != "string":
             self._commit_partial_value("".join(self.partial_token))
 
-    def _start_string(self):
-        """Initialize string parsing state when encountering a quote.
-
-        Sets up the parser state for processing a string literal, including
-        resetting relevant flags and buffers.
-        """
-        self.in_string = True
-        self.token_type = "string"
-        self.partial_token = []
-
-    def _end_string(self):
-        self.in_string = False
-        self._commit_value("".join(self.partial_token))
-        self.token_type = None
-
     def _read_string(self, buffer: str, index: int) -> tuple[int, bool]:
         """Process characters in a string literal.
 
         Args:
-            buffer (str): Input buffer containing the string content.
-            index (int): Starting position in the buffer.
+            buffer: Input buffer containing the string content.
+            index: Starting position in the buffer.
 
         Returns:
-            tuple[int, bool]: A tuple containing:
+            A tuple containing:
                 - The new buffer position after processing
                 - Whether the string was completed (True) or partial (False)
+
+        Note:
+            Handles escape sequences and string delimiters according to JSON spec.
         """
         i = index
         while i < len(buffer):
@@ -325,6 +326,10 @@ class StreamJsonParser:
         """Initialize object parsing state when encountering '{'.
 
         Creates a new dictionary container and pushes it onto the stack.
+        Updates the parser state to expect an object key or handle empty objects.
+
+        Raises:
+            MalformedJSON: If starting an object in an invalid context.
         """
         obj = {}
         # error case
@@ -334,144 +339,229 @@ class StreamJsonParser:
                 raise MalformedJSON("invalid object: no parent container")
 
             # normal case, add object and transition to wait for a key
-            self.stack.append(Container(obj, ParserState.OBJECT_WAITING_KEY, None))
+            self.stack.append((obj, ParserState.OBJECT_WAITING_KEY, None, False))
             return
 
         # We are in an existing container. We add this new object as a value (or for dict).
-        container = self.stack[-1]
-        if container.state not in [
+        container, state, last_key, _ = self.stack[-1]
+        if state not in [
             ParserState.OBJECT_WAITING_VALUE,
             ParserState.ARRAY_WAITING_VALUE,
         ]:
+            logger.error("invalid object: unexpected state, waiting for object value")
             raise MalformedJSON(
                 "invalid object: unexpected state, waiting for object value"
             )
 
-        is_an_object = isinstance(container.container, dict)
+        is_an_object = isinstance(container, dict)
         if is_an_object:
-            container.container[container.last_key] = obj
+            container[last_key] = obj
         else:
-            container.container.append(obj)
+            container.append(obj)
 
-        self.stack[-1] = Container(
-            container.container,
-            ParserState.OBJECT_WAITING_COMMA
-            if is_an_object
-            else ParserState.ARRAY_WAITING_COMMA,
+        self.stack[-1] = (
+            container,
+            (
+                ParserState.OBJECT_WAITING_COMMA
+                if is_an_object
+                else ParserState.ARRAY_WAITING_COMMA
+            ),
             None,
+            False,
         )
 
-        self.stack.append(Container(obj, ParserState.OBJECT_WAITING_KEY, None))
+        self.stack.append((obj, ParserState.OBJECT_WAITING_KEY, None, False))
 
     def _dict_colon(self):
+        """Process a colon token in a dictionary context.
+
+        Updates parser state after encountering a colon between key and value.
+
+        Raises:
+            MalformedJSON: If colon appears in invalid context or state.
+        """
         if not self.stack:
+            logger.error("invalid object: no object parent container")
             raise MalformedJSON("invalid object: no object parent container")
 
-        container = self.stack[-1]
-        if not isinstance(container.container, dict):
+        container, state, last_key, is_value_partial = self.stack[-1]
+        if not isinstance(container, dict):
+            logger.error("invalid object: expected dict to close object")
             raise MalformedJSON("invalid object: expected dict to close object")
 
-        if container.state != ParserState.OBJECT_WAITING_COLON:
+        if state != ParserState.OBJECT_WAITING_COLON:
+            logger.error("invalid object: expected colon after object key")
             raise MalformedJSON("invalid object: expected colon after object key")
 
-        self.stack[-1].state = ParserState.OBJECT_WAITING_VALUE
+        self.stack[-1] = (
+            container,
+            ParserState.OBJECT_WAITING_VALUE,
+            last_key,
+            is_value_partial,
+        )
 
     def _end_object(self):
+        """Process the end of an object when encountering '}'.
+
+        Validates object closure and updates parser state.
+
+        Raises:
+            MalformedJSON: If closing an object in invalid context or state.
+        """
         if not self.stack:
+            logger.error("invalid object: no object parent container")
             raise MalformedJSON("invalid object: no object parent container")
 
-        container = self.stack[-1]
-        if not isinstance(container.container, dict):
+        container, state, _, _ = self.stack[-1]
+        if not isinstance(container, dict):
+            logger.error("invalid object: expected dict to close object")
             raise MalformedJSON("invalid object: expected dict to close object")
 
-        if container.state not in [
+        if state not in [
             ParserState.OBJECT_WAITING_KEY,
             ParserState.OBJECT_WAITING_VALUE,
             ParserState.OBJECT_WAITING_COMMA,
         ]:
+            logger.error(
+                f"invalid object: expected state to be key or value or comma, but got {state}"
+            )
             raise MalformedJSON(
-                f"invalid object: expected state to be key or value or comma, but got {container.state}"
+                f"invalid object: expected state to be key or value or comma, but got {state}"
             )
 
         self.stack.pop()
         if not self.stack:
-            self.root = container.container
+            self.root = container
 
     def _start_array(self):
+        """Initialize array parsing state when encountering '['.
+
+        Creates a new list container and pushes it onto the stack.
+        Updates parser state to expect array values or handle empty arrays.
+
+        Raises:
+            MalformedJSON: If starting an array in an invalid context.
+        """
         arr = []
         # error case
         if not self.stack:
             if self.root is not None:
-                logger.error("invalid object: double root")
+                logger.error("invalid object: no parent container")
                 raise MalformedJSON("invalid object: no parent container")
 
             # normal case, add object and transition to wait for a value
-            self.stack.append(Container(arr, ParserState.ARRAY_WAITING_VALUE, None))
+            self.stack.append((arr, ParserState.ARRAY_WAITING_VALUE, None, False))
             return
 
-        container = self.stack[-1]
-        if container.state not in [
+        container, state, last_key, _ = self.stack[-1]
+        if state not in [
             ParserState.OBJECT_WAITING_VALUE,
             ParserState.ARRAY_WAITING_VALUE,
         ]:
+            logger.error("invalid object: unexpected state, waiting for object value")
             raise MalformedJSON(
                 "invalid object: unexpected state, waiting for object value"
             )
 
-        is_an_obj = isinstance(container.container, dict)
+        is_an_obj = isinstance(container, dict)
         if is_an_obj:
-            container.container[container.last_key] = arr
+            container[last_key] = arr
         else:
-            container.container.append(arr)
+            container.append(arr)
 
-        self.stack[-1].state = (
-            ParserState.OBJECT_WAITING_COMMA
-            if is_an_obj
-            else ParserState.ARRAY_WAITING_COMMA
+        self.stack[-1] = (
+            container,
+            (
+                ParserState.OBJECT_WAITING_COMMA
+                if is_an_obj
+                else ParserState.ARRAY_WAITING_COMMA
+            ),
+            last_key,
+            False,
         )
 
-        self.stack.append(Container(arr, ParserState.ARRAY_WAITING_VALUE, None))
+        self.stack.append((arr, ParserState.ARRAY_WAITING_VALUE, None, False))
 
     def _end_array(self):
+        """Process the end of an array when encountering ']'.
+
+        Validates array closure and updates parser state.
+
+        Raises:
+            MalformedJSON: If closing an array in invalid context or state.
+        """
         if not self.stack:
+            logger.error("invalid object: no array parent container")
             raise MalformedJSON("invalid object: no array parent container")
 
-        container = self.stack[-1]
-        if not isinstance(container.container, list):
+        container, state, _, _ = self.stack[-1]
+        if not isinstance(container, list):
+            logger.error("invalid object: expected list to close array")
             raise MalformedJSON("invalid object: expected list to close array")
 
-        if container.state not in [
+        if state not in [
             ParserState.ARRAY_WAITING_VALUE,
             ParserState.ARRAY_WAITING_COMMA,
         ]:
+            logger.error(
+                f"invalid object: expected state to be value or comma, but got {state}"
+            )
             raise MalformedJSON(
-                f"invalid object: expected state to be value or comma, but got {container.state}"
+                f"invalid object: expected state to be value or comma, but got {state}"
             )
 
         self.stack.pop()
         if not self.stack:
-            self.root = container.container
+            self.root = container
 
     def _got_comma(self):
+        """Process a comma token in current container context.
+
+        Updates parser state after encountering a comma between values.
+
+        Raises:
+            MalformedJSON: If comma appears in invalid context or state.
+        """
         if not self.stack:
+            logger.error("invalid object: no parent container")
             raise MalformedJSON("invalid object: no parent container")
 
-        container = self.stack[-1]
-        if container.state not in [
+        container, state, last_key, is_value_partial = self.stack[-1]
+        if state not in [
             ParserState.OBJECT_WAITING_COMMA,
             ParserState.ARRAY_WAITING_COMMA,
         ]:
+            logger.error(f"invalid object: expected state to be comma, but got {state}")
             raise MalformedJSON(
-                f"invalid object: expected state to be comma, but got {container.state}"
+                f"invalid object: expected state to be comma, but got {state}"
             )
 
-        self.stack[-1].state = (
-            ParserState.OBJECT_WAITING_KEY
-            if isinstance(container.container, dict)
-            else ParserState.ARRAY_WAITING_VALUE
+        self.stack[-1] = (
+            container,
+            (
+                ParserState.OBJECT_WAITING_KEY
+                if isinstance(container, dict)
+                else ParserState.ARRAY_WAITING_VALUE
+            ),
+            last_key,
+            is_value_partial,
         )
 
     def _read_nonstring_char(self, c: str) -> bool:
+        """Process a character in a non-string token context.
+
+        Args:
+            c: The character to process.
+
+        Returns:
+            bool: True if character was processed, False if token is complete.
+
+        Raises:
+            MalformedJSON: If character is invalid for current token type.
+
+        Note:
+            Handles numeric literals and JSON keywords (true, false, null).
+        """
         if self.token_type == "number":
             # If it's a valid number char
             if c in "0123456789+-.eE":
@@ -500,10 +590,17 @@ class StreamJsonParser:
         return False
 
     def _commit_token(self) -> bool:
-        """
-        We have a partial token in self.partial_token, type in self.token_type.
-        We'll try to finalize it as a number or true/false/null. Then we attach it.
-        Return True if success, False if we cannot finalize it yet (partial).
+        """Attempt to finalize the current partial token.
+
+        Returns:
+            bool: True if token was successfully committed, False if still partial.
+
+        Raises:
+            MalformedJSON: If token is malformed or invalid.
+
+        Note:
+            Converts string representation to appropriate Python type and
+            updates the container structure with the final value.
         """
         if self.token_type == "number":
             # try to parse
@@ -548,129 +645,128 @@ class StreamJsonParser:
             return False
 
         # unknown or 'string' shouldn't come here
+        logger.warning(f"unknown token type {self.token_type}")
         return False
 
-    def _commit_string(self, value: str):
-        if not self.stack:
-            raise MalformedJSON("invalid json, string cannot be a root element.")
-
-        container = self.stack[-1]
-        if isinstance(container.container, dict):
-            if container.state == ParserState.OBJECT_WAITING_KEY:
-                self.stack[-1] = Container(
-                    container.container, ParserState.OBJECT_WAITING_COLON, value
-                )
-                return
-
-            if container.state == ParserState.OBJECT_WAITING_VALUE:
-                container.container[container.last_key] = value
-                self.stack[-1] = Container(
-                    container.container, ParserState.OBJECT_WAITING_COMMA, None
-                )
-                return
-
-            raise MalformedJSON(f"unexpected string in object state: {container.state}")
-
-        if container.state == ParserState.ARRAY_WAITING_VALUE:
-            container.container.append(value)
-            self.stack[-1] = Container(
-                container.container, ParserState.ARRAY_WAITING_COMMA, None
-            )
-        else:
-            raise MalformedJSON(f"unexpected string in array state: {container.state}")
-
     def _commit_value(self, value: Any):
+        """Add a complete value to the current container.
+
+        Args:
+            value: The Python value to add to current container.
+
+        Raises:
+            MalformedJSON: If value cannot be added in current context.
+
+        Note:
+            Updates container and parser state after adding the value.
+        """
         if not self.stack:
+            logger.error("invalid json, any value cannot be a root element.")
             raise MalformedJSON("invalid json, any value cannot be a root element.")
 
-        container = self.stack[-1]
-        if isinstance(container.container, dict):
-            if container.state == ParserState.OBJECT_WAITING_KEY:
-                self.stack[-1] = Container(
-                    container.container, ParserState.OBJECT_WAITING_COLON, value
+        container, state, last_key, is_value_partial = self.stack[-1]
+        if isinstance(container, dict):
+            if state == ParserState.OBJECT_WAITING_KEY:
+                self.stack[-1] = (
+                    container,
+                    ParserState.OBJECT_WAITING_COLON,
+                    value,
+                    False,
                 )
                 return
 
-            if container.state == ParserState.OBJECT_WAITING_VALUE:
+            if state == ParserState.OBJECT_WAITING_VALUE:
                 # if there are partial values, then simply overwrite
-                container.container[container.last_key] = value
-                container.last_value_partial = False
-
-                self.stack[-1] = Container(
-                    container.container, ParserState.OBJECT_WAITING_COMMA, None
+                container[last_key] = value
+                self.stack[-1] = (
+                    container,
+                    ParserState.OBJECT_WAITING_COMMA,
+                    None,
+                    False,
                 )
                 return
 
-            raise MalformedJSON(
-                f"not expecting an object value, current state {container.state}"
-            )
+            logger.error(f"not expecting an object value, current state {state}")
+            raise MalformedJSON(f"not expecting an object value, current state {state}")
 
-        if container.state != ParserState.ARRAY_WAITING_VALUE:
-            raise MalformedJSON(
-                f"not expecting an array value, current state {container.state}"
-            )
+        if state != ParserState.ARRAY_WAITING_VALUE:
+            logger.error(f"not expecting an array value, current state {state}")
+            raise MalformedJSON(f"not expecting an array value, current state {state}")
 
-        if container.last_value_partial and len(container.container) == 0:
-            raise StreamJsonParser("we have partial values but no value in array")
+        if is_value_partial and len(container) == 0:
+            logger.error("we have partial values but no values in array")
+            raise StreamJsonParser("we have partial values but no values in array")
 
-        if container.last_value_partial:
-            container.container[-1] = value
-            container.last_value_partial = False
+        if is_value_partial:
+            container[-1] = value
         else:
-            container.container.append(value)
+            container.append(value)
 
-        self.stack[-1] = Container(
-            container.container, ParserState.ARRAY_WAITING_COMMA, None
-        )
+        self.stack[-1] = (container, ParserState.ARRAY_WAITING_COMMA, None, False)
 
     def _commit_partial_value(self, value: Any):
+        """Add or update a partial value in the current container.
+
+        Args:
+            value: The partial Python value to add/update.
+
+        Raises:
+            MalformedJSON: If value cannot be added in current context.
+
+        Note:
+            Handles string concatenation for partial string values and
+            maintains partial state for container.
+        """
         if not self.stack:
+            logger.error("invalid json, any value cannot be a root element.")
             raise MalformedJSON("invalid json, any value cannot be a root element.")
 
-        container = self.stack[-1]
-        if isinstance(container.container, dict):
-            if container.state == ParserState.OBJECT_WAITING_KEY:
+        container, state, last_key, is_value_partial = self.stack[-1]
+        if isinstance(container, dict):
+            if state == ParserState.OBJECT_WAITING_KEY:
                 # we do nothing, we dont partially commit a key
                 return
 
-            if container.state == ParserState.OBJECT_WAITING_VALUE:
-                if (
-                    container.last_value_partial
-                    and container.last_key in container.container
-                ):
-                    container.container[container.last_key] += value
+            if state == ParserState.OBJECT_WAITING_VALUE:
+                if is_value_partial and last_key in container:
+                    container[last_key] += value
                 else:
-                    container.container[container.last_key] = value
+                    container[last_key] = value
 
-                container.last_value_partial = True
+                # update is_value_partial
+                self.stack[-1] = (container, state, last_key, True)
                 return
 
-            raise MalformedJSON(
-                f"not expecting an object value, current state {container.state}"
-            )
+            logger.error(f"not expecting an object value, current state {state}")
+            raise MalformedJSON(f"not expecting an object value, current state {state}")
 
-        if container.state != ParserState.ARRAY_WAITING_VALUE:
-            raise MalformedJSON(
-                f"not expecting an array value, current state {container.state}"
-            )
+        if state != ParserState.ARRAY_WAITING_VALUE:
+            logger.error(f"not expecting an array value, current state {state}")
+            raise MalformedJSON(f"not expecting an array value, current state {state}")
 
-        if container.last_value_partial and len(container.container) > 0:
-            container.container[-1] += value
+        if is_value_partial and len(container) > 0:
+            container[-1] += value
         else:
-            container.container.append(value)
+            container.append(value)
 
-        container.last_value_partial = True
+        # update is_value_partial
+        self.stack[-1] = (container, state, last_key, True)
 
     def get(self) -> Any:
         """Retrieve the current parse result.
 
         Returns:
-            Any: The parsed JSON structure. Could be:
+            The parsed JSON structure, which could be:
                 - Complete top-level structure if parsing is done
                 - Partial structure if parsing is incomplete
                 - None if no structure has been recognized yet
+
+        Note:
+            The returned structure may contain partial values if parsing
+            is incomplete. Partial values are represented as they were
+            received in the input chunks.
         """
-        # If we have a finalized root and no stack, that’s a fully closed top-level object/array
+        # If we have a finalized root and no stack, that's a fully closed top-level object/array
         if self.root is not None and not self.stack:
             return self.root
 
@@ -680,13 +776,13 @@ class StreamJsonParser:
 
         # Rebuild partial structure from top-level of stack
         # In standard JSON, there's only one top-level container anyway => stack[0]
-        top_container = self.stack[0]
+        top_container, _, _, _ = self.stack[0]
         # But the container itself is partially or fully built. Because we hold references,
         # it includes nested partial structures as well. So returning top_container is enough.
         # The only difference: Some key might not be "committed" if we haven't seen a colon, etc.
         # We have *not* stored partial keys => so they're absent in the dict.
         # Partial string values are present in the dict or list.
-        return top_container.container
+        return top_container
 
 
 ###############################################################################
