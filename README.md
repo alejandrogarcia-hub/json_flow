@@ -34,9 +34,9 @@ The JSON stream parser's complexity can be analyzed by its key operations:
 2. **Parsing Operations**: O(1)
    - All parsing operations use constant extra space
 
-### Recursion
+### Stack
 
-The parser uses recursion to handle nested structures. The depth of the recursion is determined by the depth of the JSON structure being parsed. For deep nested json files, it might raise a stack overflow runtime error.
+The parser uses a stack to handle nested structures. The depth of the recursion is determined by the depth of the JSON structure being parsed. For deep nested json files, the solution **will not raise a stack overflow runtime error** (unless not enough memory).
 
 ## Installation
 
