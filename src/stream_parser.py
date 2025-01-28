@@ -500,16 +500,6 @@ class StreamJsonParser:
         - Scientific notation (e.g., 1.23e4, 1.23E4, -1.23e-4)
         - Special cases (0, -0, etc.)
 
-        The method uses a state machine to track parsing state:
-        - State 0: Start (expect minus or digit)
-        - State 1: After minus (expect digit)
-        - State 2: After first digit in integer part
-        - State 3: After decimal point (expect digit)
-        - State 4: After digit in fraction part
-        - State 5: After e/E (expect sign or digit)
-        - State 6: After sign in exponent (expect digit)
-        - State 7: After digit in exponent
-
         Args:
             json_str: The JSON string to parse.
 

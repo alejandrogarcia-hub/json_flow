@@ -1,5 +1,7 @@
 from enum import IntEnum
-from typing import Any, Optional
+from typing import Any, Optional, Union
+
+from pydantic import conbytes
 
 from config import logger
 
@@ -44,7 +46,11 @@ class ParserState(IntEnum):
 
 class Container:
     def __init__(
-        self, container: Any, state: ParserState, last_key: Optional[str]
+        self,
+        container: Union[dict | list],
+        state: ParserState,
+        last_key: Optional[str],
+        last_value_partial: Optional[bool] = False,
     ) -> None:
         """
         container: object or array
@@ -54,6 +60,7 @@ class Container:
         self.container = container
         self.state = state
         self.last_key = last_key
+        self.last_value_partial = last_value_partial
 
 
 def _find_non_whitespace_index(buffer: [], index: int) -> int:
@@ -155,21 +162,18 @@ class StreamJsonParser:
         """Parse the complete JSON string."""
         i = self.last_index
         while i < len(self.buffer):
-            # we are parsing a string
-            if self.in_string:
-                i = self._read_string(self.buffer, i)
-                # we need to update current_char
-                continue
-
             i = _find_non_whitespace_index(self.buffer, i)
+            if i >= len(self.buffer):
+                break
             current_char = self.buffer[i]
 
             # these are the state transition chars
             if current_char in "{[}]:,":
-                if self.token_type is not None and not self._commit_partial_token():
+                # if we were processing some esle then commit
+                # case for true, false, null, numbers
+                if self.token_type is not None and not self._commit_token():
                     raise MalformedJSON("invalid partial token before state transition")
 
-                i += 1
                 if current_char == "{":
                     self._start_object()
                 elif current_char == "[":
@@ -182,25 +186,54 @@ class StreamJsonParser:
                     self._dict_colon()
                 else:
                     self._got_comma()
+
+                i += 1
+                continue
+
+            # we are parsing a string
+            if self.in_string:
+                i, completed = self._read_string(self.buffer, i)
+                if completed:
+                    self._end_string()
+                # we need to update current_char
                 continue
 
             if current_char == '"':
-                if self.token_type is not None and not self._commit_partial_token():
-                    raise MalformedJSON("invlaid partial token before string")
-
                 self._start_string()
                 i += 1
             else:
                 # Possibly part of a number or 'true', 'false', 'null'
+                if self.token_type is None:
+                    # We need to decide the token type
+                    if current_char in "-0123456789":
+                        self.token_type = "number"
+                        self.partial_token = []
+                        continue
+
+                    if current_char in "tfn":  # t->true, f->false, n->null
+                        # We'll guess based on first letter
+                        self.token_type = "literal"
+                        self.partial_token = []
+                        continue
+
+                    # unrecognized start
+                    raise MalformedJSON(
+                        f"unrecognized start character '{current_char}'"
+                    )
+
                 completed = self._read_nonstring_char(current_char)
                 if not completed:
                     # Means we cannot proceed - partial token
                     break
+
                 i += 1
 
         self.last_index = i
         if self.in_string:
             # we do accept partial values
+            self._commit_partial_value("".join(self.partial_token))
+
+        if self.token_type and self.token_type != "string":
             self._commit_partial_value("".join(self.partial_token))
 
     def _start_string(self):
@@ -213,7 +246,12 @@ class StreamJsonParser:
         self.token_type = "string"
         self.partial_token = []
 
-    def _read_string(self, buffer: str, index: int) -> int:
+    def _end_string(self):
+        self.in_string = False
+        self._commit_value("".join(self.partial_token))
+        self.token_type = None
+
+    def _read_string(self, buffer: str, index: int) -> tuple[int, bool]:
         """
         Attempt to read the next character c.
         Return True if consumed, False if we must stop because of partial data.
@@ -229,46 +267,13 @@ class StreamJsonParser:
                 continue
 
             if buffer[i] == '"':
-                self.in_string = False
-                self._commit_string("".join(self.partial_token))
-                self.token_type = None
-                self.partial_token = []
-                i += 1
-                return i
+                return i + 1, True
 
             self.partial_token.append(buffer[i])
             i += 1
 
-        return i
+        return i, False
 
-    def _commit_string(self, value: str):
-        if not self.stack:
-            raise MalformedJSON("invalid json, string cannot be a root element.")
-
-        container = self.stack[-1]
-        if isinstance(container.container, dict):
-            if container.state == ParserState.OBJECT_WAITING_KEY:
-                self.stack[-1] = Container(
-                    container.container, ParserState.OBJECT_WAITING_COLON, value
-                )
-                return
-
-            if container.state == ParserState.OBJECT_WAITING_VALUE:
-                container.container[container.last_key] = value
-                self.stack[-1] = Container(
-                    container.container, ParserState.OBJECT_WAITING_COMMA, None
-                )
-                return
-
-            raise MalformedJSON(f"unexpected string in object state: {container.state}")
-
-        if container.state == ParserState.ARRAY_WAITING_VALUE:
-            container.container.append(value)
-            self.stack[-1] = Container(
-                container.container, ParserState.ARRAY_WAITING_COMMA, None
-            )
-        else:
-            raise MalformedJSON(f"unexpected string in array state: {container.state}")
 
     def _start_object(self):
         """
@@ -324,9 +329,7 @@ class StreamJsonParser:
         if container.state != ParserState.OBJECT_WAITING_COLON:
             raise MalformedJSON("invalid object: expected colon after object key")
 
-        self.stack[-1] = Container(
-            container.container, ParserState.OBJECT_WAITING_VALUE, container.last_key
-        )
+        self.stack[-1].state = ParserState.OBJECT_WAITING_VALUE
 
     def _end_object(self):
         if not self.stack:
@@ -376,12 +379,10 @@ class StreamJsonParser:
         else:
             container.container.append(arr)
 
-        self.stack[-1] = Container(
-            container.container,
+        self.stack[-1].state = (
             ParserState.OBJECT_WAITING_COMMA
             if is_an_obj
-            else ParserState.ARRAY_WAITING_COMMA,
-            None,
+            else ParserState.ARRAY_WAITING_COMMA
         )
 
         self.stack.append(Container(arr, ParserState.ARRAY_WAITING_VALUE, None))
@@ -412,80 +413,68 @@ class StreamJsonParser:
 
         container = self.stack[-1]
         if container.state not in [
-            ParserState.OBJECT_WAITING_VALUE,
-            ParserState.ARRAY_WAITING_VALUE,
+            ParserState.OBJECT_WAITING_COMMA,
+            ParserState.ARRAY_WAITING_COMMA,
         ]:
             raise MalformedJSON(
-                f"invalid object: expected state to be value, but got {container.state}"
+                f"invalid object: expected state to be comma, but got {container.state}"
             )
 
-        self.stack[-1] = Container(
-            container.container,
+        self.stack[-1].state = (
             ParserState.OBJECT_WAITING_KEY
             if isinstance(container.container, dict)
-            else ParserState.ARRAY_WAITING_VALUE,
-            None,
+            else ParserState.ARRAY_WAITING_VALUE
         )
 
     def _read_nonstring_char(self, c: str) -> bool:
-        if self.token_type is None:
-            # We need to decide the token type
-            if c in "-0123456789":
-                self.token_type = "number"
-                self.partial_token = [c]
-                return True
-            elif c in "tfn":  # t->true, f->false, n->null
-                # We'll guess based on first letter
-                self.token_type = "literal"
-                self.partial_token = [c]
-                return True
-            else:
-                # unrecognized start
-                return False
-        else:
-            if self.token_type == "number":
-                # If it's a valid number char
-                if c in "0123456789+-.eE":
-                    self.partial_token.append(c)
-                    return True
-                else:
-                    # The number token ended. We must commit what we have, then re-process c
-                    # So let's step back one char in the main parser, to handle c as structural or next token
-                    # We'll finalize the number now.
-                    if not self._commit_partial_token():
-                        logger.error("invalid numeric token: " + c)
-                        raise MalformedJSON("invalid numeric token")
-
-                    # do not consume c
-                    return False
-            elif self.token_type == "literal":
-                # possibly true/false/null
+        if self.token_type == "number":
+            # If it's a valid number char
+            if c in "0123456789+-.eE":
                 self.partial_token.append(c)
-                # Check if we definitely recognized or definitely invalid
-                st = "".join(self.partial_token)
-                if st in ("true", "false", "null"):
-                    # We have recognized the entire literal
-                    # But we need to see if it's fully ended (the next char is not a letter).
-                    # e.g. "truex" is invalid. We'll require next char to not be [a-zA-Z0-9].
-                    # But in streaming scenario, we might not have next char yet => partial.
-                    # We'll assume if we read the whole literal, we commit now, and if the next char is invalid,
-                    # we'll catch it in the next iteration.
-                    # We'll commit if the next char does not continue the literal
-                    # For safety, we can look ahead. But let's do a simpler approach: if we see the next
-                    # char is a structural one, we commit now. If partial, we'll do a break. This is
-                    # simpler for demonstration.
-                    return True  # We'll finalize in next step if we see a structural delimiter.
-                elif not any(lit.startswith(st) for lit in ("true", "false", "null")):
-                    # definitely invalid
-                    logger.error("invalid literal: " + st)
-                    raise MalformedJSON("invalid literal: " + st)
-                # else it might still be partial
-                return True
-            else:
-                # unknown
-                return False
+            # else:
+            #     # The number token ended. We must commit what we have, then re-process c
+            #     # So let's step back one char in the main parser, to handle c as structural or next token
+            #     # We'll finalize the number now.
+            #     # most probably we will never get in here
+            #     if not self._commit_token():
+            #         raise MalformedJSON("Invalid numeric token")
 
-    def _commit_partial_token(self) -> bool:
+            return True
+
+        if self.token_type == "literal":
+            # possibly true/false/null
+            self.partial_token.append(c)
+            # Check if we definitely recognized or definitely invalid
+            st = "".join(self.partial_token)
+            if st in ("true", "false", "null"):
+                # We have recognized the entire literal
+                # But we need to see if it's fully ended (the next char is not a letter).
+                # e.g. "truex" is invalid. We'll require next char to not be [a-zA-Z0-9].
+                # But in streaming scenario, we might not have next char yet => partial.
+                # We'll assume if we read the whole literal, we commit now, and if the next char is invalid,
+                # we'll catch it in the next iteration.
+                # We'll commit if the next char does not continue the literal
+                # For safety, we can look ahead. But let's do a simpler approach: if we see the next
+                # char is a structural one, we commit now. If partial, we'll do a break. This is
+                # simpler for demonstration.
+                # if not self._commit_token():
+                #     raise MalformedJSON("Invalid numeric token")
+
+                return True  # We'll finalize in next step if we see a structural delimiter.
+
+            # checks if the current partial token (st) could potentially become one of the valid literals.
+            if not any(lit.startswith(st) for lit in ("true", "false", "null")):
+                # definitely invalid
+                logger.error("invalid literal: " + st)
+                raise MalformedJSON("invalid literal: " + st)
+
+            # else it might still be partial
+            return True
+
+        # unknown
+        return False
+
+    def _commit_token(self) -> bool:
         """
         We have a partial token in self.partial_token, type in self.token_type.
         We'll try to finalize it as a number or true/false/null. Then we attach it.
@@ -493,13 +482,17 @@ class StreamJsonParser:
         """
         if self.token_type == "number":
             # try to parse
-            st = "".join(self.partial_token)
+            value = "".join(self.partial_token)
             # Let Python's float/int parse handle it, but watch for partial forms
             # If st is something like "12e", Python float parse fails => we call that partial or malformed?
             # We'll do a small check to see if it looks like a valid final number.
             # Easiest approach: try float(st). If it fails => malformed number, or partial?
             try:
-                val = float(st)
+                # Check if it's scientific notation or has decimal point
+                if "e" in value.lower() or "." in value:
+                    val = float(value)
+                else:
+                    val = int(value)
             except ValueError:
                 # It's either partial or malformed. We'll treat no exponent digits, etc., as partial.
                 # For the sake of demonstration, let's treat it as partial => return False => wait for more data.
@@ -511,12 +504,12 @@ class StreamJsonParser:
             self.partial_token = []
             return True
 
-        elif self.token_type == "literal":
-            st = "".join(self.partial_token)
-            if st in ("true", "false", "null"):
-                if st == "true":
+        if self.token_type == "literal":
+            value = "".join(self.partial_token)
+            if value in ("true", "false", "null"):
+                if value == "true":
                     val = True
-                elif st == "false":
+                elif value == "false":
                     val = False
                 else:
                     val = None
@@ -524,13 +517,42 @@ class StreamJsonParser:
                 self.token_type = None
                 self.partial_token = []
                 return True
-            else:
-                # Possibly partial
-                # e.g. st='fals' => partial for 'false'
-                return False
-        else:
-            # unknown or 'string' shouldn't come here
+
+            # Possibly partial
+            # e.g. st='fals' => partial for 'false'
             return False
+
+        # unknown or 'string' shouldn't come here
+        return False
+
+    def _commit_string(self, value: str):
+        if not self.stack:
+            raise MalformedJSON("invalid json, string cannot be a root element.")
+
+        container = self.stack[-1]
+        if isinstance(container.container, dict):
+            if container.state == ParserState.OBJECT_WAITING_KEY:
+                self.stack[-1] = Container(
+                    container.container, ParserState.OBJECT_WAITING_COLON, value
+                )
+                return
+
+            if container.state == ParserState.OBJECT_WAITING_VALUE:
+                container.container[container.last_key] = value
+                self.stack[-1] = Container(
+                    container.container, ParserState.OBJECT_WAITING_COMMA, None
+                )
+                return
+
+            raise MalformedJSON(f"unexpected string in object state: {container.state}")
+
+        if container.state == ParserState.ARRAY_WAITING_VALUE:
+            container.container.append(value)
+            self.stack[-1] = Container(
+                container.container, ParserState.ARRAY_WAITING_COMMA, None
+            )
+        else:
+            raise MalformedJSON(f"unexpected string in array state: {container.state}")
 
     def _commit_value(self, value: Any):
         if not self.stack:
@@ -538,23 +560,40 @@ class StreamJsonParser:
 
         container = self.stack[-1]
         if isinstance(container.container, dict):
-            if container.state != ParserState.OBJECT_WAITING_VALUE:
-                raise MalformedJSON(
-                    f"not expecting an object value, current state {container.state}"
+            if container.state == ParserState.OBJECT_WAITING_KEY:
+                self.stack[-1] = Container(
+                    container.container, ParserState.OBJECT_WAITING_COLON, value
                 )
+                return
 
-            container.container[container.last_key] = value
-            self.stack[-1] = Container(
-                container.container, ParserState.OBJECT_WAITING_COMMA, None
+            if container.state == ParserState.OBJECT_WAITING_VALUE:
+                # if there are partial values, then simply overwrite
+                container.container[container.last_key] = value
+                container.last_value_partial = False
+
+                self.stack[-1] = Container(
+                    container.container, ParserState.OBJECT_WAITING_COMMA, None
+                )
+                return
+
+            raise MalformedJSON(
+                f"not expecting an object value, current state {container.state}"
             )
-            return
 
         if container.state != ParserState.ARRAY_WAITING_VALUE:
             raise MalformedJSON(
                 f"not expecting an array value, current state {container.state}"
             )
 
-        container.container.append(value)
+        if container.last_value_partial and len(container.container) == 0:
+            raise StreamJsonParser("we have partial values but no value in array")
+
+        if container.last_value_partial:
+            container.container[-1] = value
+            container.last_value_partial = False
+        else:
+            container.container.append(value)
+
         self.stack[-1] = Container(
             container.container, ParserState.ARRAY_WAITING_COMMA, None
         )
@@ -565,28 +604,35 @@ class StreamJsonParser:
 
         container = self.stack[-1]
         if isinstance(container.container, dict):
-            if container.state != ParserState.OBJECT_WAITING_VALUE:
-                raise MalformedJSON(
-                    f"not expecting an object value, current state {container.state}"
-                )
+            if container.state == ParserState.OBJECT_WAITING_KEY:
+                # we do nothing, we dont partially commit a key
+                return
 
-            container.container[container.last_key] = value
-            self.stack[-1] = Container(
-                container.container,
-                ParserState.OBJECT_WAITING_VALUE,
-                container.last_key,
+            if container.state == ParserState.OBJECT_WAITING_VALUE:
+                if container.last_value_partial and container.last_key in container.container:
+                    container.container[container.last_key] += value
+                else:
+                    container.container[container.last_key] = value
+
+                container.last_value_partial = True
+                return
+            
+            raise MalformedJSON(
+                f"not expecting an object value, current state {container.state}"
             )
-            return
 
         if container.state != ParserState.ARRAY_WAITING_VALUE:
             raise MalformedJSON(
                 f"not expecting an array value, current state {container.state}"
             )
 
-        container.container.append(value)
-        self.stack[-1] = Container(
-            container.container, ParserState.ARRAY_WAITING_VALUE, None
-        )
+        if container.last_value_partial and len(container.container) > 0:
+            container.container[-1] += value
+        else:
+            container.container.append(value)
+        
+        container.last_value_partial = True
+        
 
     def get(self) -> Any:
         """
