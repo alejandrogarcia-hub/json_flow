@@ -10,12 +10,12 @@ Example:
 """
 
 from config import logger
-from stack_stream_parser import StreamJsonParser
+from stream_parser import StreamJsonParser
 
 if __name__ == "__main__":
     logger.info("starting JsonFlow ...")
     parser = StreamJsonParser()
-    parser.consume('{"foo": "bar')
+    parser.consume(
+        '{"foo": "bar", "world": null, "arr": [1, 2, 3], "baz": false, "complex": -1e2}'
+    )
     print(parser.get())  # => {"foo": "bar"} (partially complete string "bar")
-    parser.consume('"}')
-    print(parser.get())  # => {"foo": "bar"}

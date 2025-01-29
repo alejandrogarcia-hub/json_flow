@@ -352,19 +352,19 @@ class TestStreamJsonParser:
         # Test partial integer
         parser.consume('{"key": 12')
         result = parser.get()
-        assert result == {"key": "12"}
+        assert result == {"key": 12}
 
         # Test partial float
         parser = StreamJsonParser()
         parser.consume('{"key": 12.')
         result = parser.get()
-        assert result == {"key": "12."}
+        assert result == {"key": 12.0}
 
         # Test partial scientific notation
         parser = StreamJsonParser()
-        parser.consume('{"key": 1.2e')
+        parser.consume('{"key": 1.2e0')
         result = parser.get()
-        assert result == {"key": "1.2e"}
+        assert result == {"key": 1.2e0}
 
     def test_object_number_malformed(self, parser):
         """Test object with malformed numbers."""
@@ -374,6 +374,7 @@ class TestStreamJsonParser:
             '{"key": 12ee4}',  # Double exponent
             '{"key": --123}',  # Double negative
             '{"key": 12e4.5}',  # Decimal in exponent
+            '{"key": 12e}',  # No exp value
         ]
         for json_input in invalid_cases:
             parser = StreamJsonParser()
