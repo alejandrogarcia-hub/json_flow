@@ -9,11 +9,13 @@ Example:
         $ python main.py
 """
 
-from config import logger
 from stack_stream_parser import StreamJsonParser
 
+###############################################################################
+# Usage Example
+###############################################################################
+
 if __name__ == "__main__":
-    logger.info("starting JsonFlow ...")
     parser = StreamJsonParser()
     parser.consume('{"foo": "bar')
     print(parser.get())  # => {"foo": "bar"} (partially complete string "bar")

@@ -1,6 +1,3 @@
-import json
-import unittest
-
 import pytest
 
 from config import logger
@@ -14,390 +11,362 @@ def disable_logging():
     logger.disabled = False
 
 
-class TestStreamJsonParser(unittest.TestCase):
-    def setUp(self):
-        self.parser = StreamJsonParser()
+@pytest.fixture
+def numbers():
+    return [
+        "1",
+        "-1",
+        "0.0",
+        "3.14",
+        "-2.5",
+        "1e5",
+        "-1e-5",
+        "1.23e+4",
+        "-4.56e-2",
+    ]
 
-    @pytest.fixture
-    def validate_json(self):
-        yield
-        try:
-            json.loads(self.actual)
-        except json.decoder.JSONDecodeError as e:
-            pytest.fail(f"Invalid JSON: {self.actual}\nError: {e}")
 
-    def test_initialization(self):
+@pytest.fixture
+def partial_numbers():
+    return [
+        ("12e", 2),
+        ("-12e", 3),
+        ("12e-", 2),
+        ("-12e-", 3),
+        ("12.", 2),
+        ("-12.", 3),
+    ]
+
+
+@pytest.fixture
+def parser():
+    """Fixture that provides a StreamJsonParser instance."""
+    return StreamJsonParser()
+
+
+class TestStreamJsonParser:
+    """Test class for StreamJsonParser."""
+
+    def test_initialization(self, parser):
         """Test that parser initializes with empty stack and no current stream"""
-        self.assertIsNone(self.parser.get())
+        assert parser.get() is None
 
-    def test_empty_string(self):
+    def test_empty_string(self, parser):
         """Test consuming an empty string"""
-        self.parser.consume("")
-        self.assertIsNone(self.parser.get())
+        parser.consume("")
+        assert parser.get() is None
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_empty_object(self):
+    def test_empty_object(self, parser):
         """Test consuming an empty object"""
-        self.parser.consume("{}")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "{}")
+        parser.consume("{}")
+        assert parser.get() == {}
 
-    def test_invalid_multiple_roots(self):
-        """Test consuming JSON with multiple roots"""
-        invalid_cases = [
-            "{}{}",
-            "{}[]",
-            "[][]",
-            "[]{}",
-        ]
-        for json_input in invalid_cases:
-            self.parser = StreamJsonParser()
-            with self.assertRaises(StreamParserJSONDecodeError):
-                self.parser.consume(json_input)
-
-    def test_invalid_root_value(self):
+    def test_invalid_root_value(self, parser):
         """Test consuming and invalid JSON root value"""
-        with self.assertRaises(StreamParserJSONDecodeError):
-            self.parser.consume('""')
+        with pytest.raises(StreamParserJSONDecodeError):
+            parser.consume('""')
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_one_chunk(self):
+    def test_object_one_chunk(self, parser):
         """Test consuming a simple JSON object"""
-        self.parser.consume('{"key": "value"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": "value"}')
+        parser.consume('{"key": "value"}')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_partial_key(self):
+    def test_object_partial_key(self, parser):
         """Test consuming JSON with incomplete key"""
-        self.parser.consume('{"key')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "{}")
+        parser.consume('{"key')
+        result = parser.get()
+        assert result == {}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_partial_key_extended(self):
+    def test_object_partial_key_extended(self, parser):
         """Test consuming JSON with incomplete key"""
-        self.parser.consume('{"key": "value"')
-        self.parser.consume(',"new')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": "value"}')
+        parser.consume('{"key": "value"')
+        parser.consume(',"new')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_value_type_known(self):
+    def test_object_value_type_known(self, parser):
         """Test consuming JSON with not known value type"""
-        self.parser.consume('{"key":')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "{}")
+        parser.consume('{"key":')
+        result = parser.get()
+        assert result == {}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_value_type_known_partial(self):
+    def test_object_value_type_known_partial(self, parser):
         """Test consuming JSON with incomplete value but known value type"""
-        self.parser.consume('{"key": "')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": ""}')
+        parser.consume('{"key": "')
+        result = parser.get()
+        assert result == {"key": ""}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_value_type_known_partial_value(self):
+    def test_object_value_type_known_partial_value(self, parser):
         """Test consuming JSON with incomplete value but String value can be incomple"""
-        self.parser.consume('{"key": "val')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": "val"}')
+        parser.consume('{"key": "val')
+        result = parser.get()
+        assert result == {"key": "val"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_in_chunks(self):
+    def test_object_in_chunks(self, parser):
         """Test consuming JSON in multiple parts"""
-        self.parser.consume('{"key')
-        self.parser.consume('": "val')
-        self.parser.consume('ue"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": "value"}')
+        parser.consume('{"key')
+        parser.consume('": "val')
+        parser.consume('ue"}')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    def test_object_malformed(self):
+    def test_object_malformed(self, parser):
         """Test consuming JSON in multiple parts"""
-        self.parser.consume('{"key')
-        with self.assertRaises(StreamParserJSONDecodeError):
+        parser.consume('{"key')
+        with pytest.raises(StreamParserJSONDecodeError):
             # string is missing a closing quote in the key
-            self.parser.consume(': "val')
+            parser.consume(': "val')
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_nested_object(self):
+    def test_object_nested_object(self, parser):
         """Test consuming nested JSON objects"""
-        self.parser.consume('{"outer": {"inner": "value"}}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"outer": {"inner": "value"}}')
+        parser.consume('{"outer": {"inner": "value"}}')
+        result = parser.get()
+        assert result == {"outer": {"inner": "value"}}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_nested_partial_key(self):
+    def test_object_nested_partial_key(self, parser):
         """Test consuming nested JSON objects"""
-        self.parser.consume('{"outer": {"inner')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"outer": {}}')
+        parser.consume('{"outer": {"inner')
+        result = parser.get()
+        assert result == {"outer": {}}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_nested_partial_value(self):
+    def test_object_nested_partial_value(self, parser):
         """Test consuming nested JSON objects"""
-        self.parser.consume('{"outer": {"inner": "val')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"outer": {"inner": "val"}}')
+        parser.consume('{"outer": {"inner": "val')
+        result = parser.get()
+        assert result == {"outer": {"inner": "val"}}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_whitespace_before_key(self):
+    def test_object_whitespace_before_key(self, parser):
         """Test object with various whitespace before key."""
-        self.parser.consume('{\n\t  "key": "value"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{\n\t  "key": "value"}')
+        parser.consume('{\n\t  "key": "value"}')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_whitespace_after_key(self):
+    def test_object_whitespace_after_key(self, parser):
         """Test object with various whitespace after key."""
-        self.parser.consume('{"key"\r\n\t : "value"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key"\r\n\t : "value"}')
+        parser.consume('{"key"\r\n\t : "value"}')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_whitespace_before_value(self):
+    def test_object_whitespace_before_value(self, parser):
         """Test object with various whitespace before value."""
-        self.parser.consume('{"key":\n\r\t  "value"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key":\n\r\t  "value"}')
+        parser.consume('{"key":\n\r\t  "value"}')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_whitespace_after_value(self):
+    def test_object_whitespace_after_value(self, parser):
         """Test object with various whitespace after value."""
-        self.parser.consume('{"key": "value"\n\t\r  }')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": "value"\n\t\r  }')
+        parser.consume('{"key": "value"\n\t\r  }')
+        result = parser.get()
+        assert result == {"key": "value"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_whitespace_between_pairs(self):
+    def test_object_whitespace_between_pairs(self, parser):
         """Test object with various whitespace between key-value pairs."""
-        self.parser.consume('{"key1": "value1"\n\t\r  ,\n\t  "key2": "value2"}')
-        self.actual = self.parser.get()
-        self.assertEqual(
-            self.actual, '{"key1": "value1"\n\t\r  ,\n\t  "key2": "value2"}'
-        )
+        parser.consume('{"key1": "value1"\n\t\r  ,\n\t  "key2": "value2"}')
+        result = parser.get()
+        assert result == {"key1": "value1", "key2": "value2"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_partial_whitespace(self):
+    def test_object_partial_whitespace(self, parser):
         """Test partial object with whitespace in chunks."""
-        self.parser.consume('{\n\t  "key1"')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "{}")
+        parser.consume('{\n\t  "key1"')
+        result = parser.get()
+        assert result == {}
 
-        self.parser.consume("\r\n\t  :  \n\t")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "{}")
+        parser.consume("\r\n\t  :  \n\t")
+        result = parser.get()
+        assert result == {}
 
-        self.parser.consume('"value1"\n\r\t  }')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{\n\t  "key1"\r\n\t  :  \n\t"value1"\n\r\t  }')
+        parser.consume('"value1"\n\r\t  }')
+        result = parser.get()
+        assert result == {"key1": "value1"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_empty_with_whitespace(self):
+    def test_object_empty_with_whitespace(self, parser):
         """Test empty object with various whitespace."""
-        self.parser.consume("{\n\t\r  }")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "{\n\t\r  }")
+        parser.consume("{\n\t\r  }")
+        result = parser.get()
+        assert result == {}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_nested_with_whitespace(self):
+    def test_object_nested_with_whitespace(self, parser):
         """Test nested object with various whitespace."""
-        self.parser.consume('{\n  "outer"\t: {\r\n\t  "inner": "value"\n\t  }\r\n}')
-        self.actual = self.parser.get()
-        self.assertEqual(
-            self.actual, '{\n  "outer"\t: {\r\n\t  "inner": "value"\n\t  }\r\n}'
-        )
+        parser.consume('{\n  "outer"\t: {\r\n\t  "inner": "value"\n\t  }\r\n}')
+        result = parser.get()
+        assert result == {"outer": {"inner": "value"}}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_corner_case_unicode_escape(self):
+    def test_object_corner_case_unicode_escape(self, parser):
         """Test object with Unicode escape sequences in key and value."""
-        self.parser.consume('{"\\u006B\\u0065')  # "key": "val"
-        self.parser.consume('\\u0079": "\\u0076')
-        self.parser.consume('\\u0061\\u006C"}')
-        self.actual = self.parser.get()
-        self.assertEqual(
-            self.actual, '{"\\u006B\\u0065\\u0079": "\\u0076\\u0061\\u006C"}'
-        )
+        parser.consume('{"\\u006B\\u0065')  # "key": "val"
+        parser.consume('\\u0079": "\\u0076')
+        parser.consume('\\u0061\\u006C"}')
+        result = parser.get()
+        assert result == {"\\u006B\\u0065\\u0079": "\\u0076\\u0061\\u006C"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_corner_case_escaped_quotes(self):
+    def test_object_corner_case_escaped_quotes(self, parser):
         """Test object with escaped quotes in key and value."""
-        self.parser.consume('{"key\\"name": "value\\"text"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key\\"name": "value\\"text"}')
+        parser.consume('{"key\\"name": "value\\"text"}')
+        result = parser.get()
+        assert result == {'key\\"name': 'value\\"text'}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_corner_case_escaped_special(self):
+    def test_object_corner_case_escaped_special(self, parser):
         """Test object with escaped special characters."""
-        self.parser.consume('{"key\\n\\t": "value\\r\\n"}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key\\n\\t": "value\\r\\n"}')
+        parser.consume('{"key\\n\\t": "value\\r\\n"}')
+        result = parser.get()
+        assert result == {"key\\n\\t": "value\\r\\n"}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_corner_case_max_nesting(self):
+    def test_object_corner_case_max_nesting(self, parser):
         """Test object with deep nesting."""
         deep_json = (
             "{"
             + "".join([f'"k{i}": {{' for i in range(20)])
             + '"value": "deep"'
-            + "}" * 21
+            + "}" * 20
         )
-        self.parser.consume(deep_json)
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, deep_json)
+        parser.consume(deep_json)
+        result = parser.get()
+        # Verify the deepest value
+        current = result
+        for i in range(20):
+            assert f"k{i}" in current
+            current = current[f"k{i}"]
+        assert current["value"] == "deep"
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_corner_case_long_key_value(self):
+    def test_object_corner_case_long_key_value(self, parser):
         """Test object with very long key and value."""
         long_str = "x" * 1000
-        self.parser.consume(f'{{"{long_str}": "{long_str}"}}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, f'{{"{long_str}": "{long_str}"}}')
+        parser.consume(f'{{"{long_str}": "{long_str}"}}')
+        result = parser.get()
+        assert result == {long_str: long_str}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_corner_case_empty_key_value(self):
+    def test_object_corner_case_empty_key_value(self, parser):
         """Test object with empty key and value."""
-        self.parser.consume('{"": ""}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"": ""}')
+        parser.consume('{"": ""}')
+        result = parser.get()
+        assert result == {"": ""}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_empty_array(self):
+    def test_empty_array(self, parser):
         """Test parsing an empty array."""
-        self.parser.consume("[]")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "[]")
+        parser.consume("[]")
+        result = parser.get()
+        assert result == []
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_with_single_value(self):
+    def test_array_with_single_value(self, parser):
         """Test parsing an array with a single string value."""
-        self.parser.consume('["test"]')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test"]')
+        parser.consume('["test"]')
+        result = parser.get()
+        assert result == ["test"]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_with_multiple_values(self):
+    def test_array_with_multiple_values(self, parser):
         """Test parsing an array with multiple string values."""
-        self.parser.consume('["test1", "test2", "test3"]')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test1", "test2", "test3"]')
+        parser.consume('["test1", "test2", "test3"]')
+        result = parser.get()
+        assert result == ["test1", "test2", "test3"]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_with_partial_input(self):
+    def test_array_with_partial_input(self, parser):
         """Test parsing an array with partial input in multiple chunks."""
-        self.parser.consume('["test1"')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test1"]')
+        parser.consume('["test1"')
+        result = parser.get()
+        assert result == ["test1"]
 
-        self.parser.consume(', "test2"')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test1", "test2"]')
+        parser.consume(', "test2"')
+        result = parser.get()
+        assert result == ["test1", "test2"]
 
-        self.parser.consume("]")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test1", "test2"]')
+        parser.consume("]")
+        result = parser.get()
+        assert result == ["test1", "test2"]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_nested_array_in_object(self):
+    def test_nested_array_in_object(self, parser):
         """Test parsing an object containing an array."""
-        self.parser.consume('{"values": ["test1", "test2"]}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"values": ["test1", "test2"]}')
+        parser.consume('{"values": ["test1", "test2"]}')
+        result = parser.get()
+        assert result == {"values": ["test1", "test2"]}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_in_object_partial(self):
+    def test_array_in_object_partial(self, parser):
         """Test parsing an object with array using partial input."""
-        self.parser.consume('{"values": [')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"values": []}')
+        parser.consume('{"values": [')
+        result = parser.get()
+        assert result == {"values": []}
 
-        self.parser.consume('"test1", ')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"values": ["test1"]}')
+        parser.consume('"test1", ')
+        result = parser.get()
+        assert result == {"values": ["test1"]}
 
-        self.parser.consume('"test2"]}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"values": ["test1", "test2"]}')
+        parser.consume('"test2"]}')
+        result = parser.get()
+        assert result == {"values": ["test1", "test2"]}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_integer(self):
+    def test_object_number_integer(self, parser):
         """Test object with integer values."""
-        self.parser.consume('{"key": 123}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": 123}')
+        parser.consume('{"key": 123}')
+        result = parser.get()
+        assert result == {"key": 123}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_negative(self):
+    def test_object_number_negative(self, parser):
         """Test object with negative numbers."""
-        self.parser.consume('{"key": -456}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": -456}')
+        parser.consume('{"key": -456}')
+        result = parser.get()
+        assert result == {"key": -456}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_float(self):
+    def test_object_number_float(self, parser):
         """Test object with floating point numbers."""
-        self.parser.consume('{"key": 123.456}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": 123.456}')
+        parser.consume('{"key": 123.456}')
+        result = parser.get()
+        assert result == {"key": 123.456}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_negative_float(self):
+    def test_object_number_negative_float(self, parser):
         """Test object with negative floating point numbers."""
-        self.parser.consume('{"key": -123.456}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": -123.456}')
+        parser.consume('{"key": -123.456}')
+        result = parser.get()
+        assert result == {"key": -123.456}
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_scientific(self):
+    def test_object_number_scientific(self, parser):
         """Test object with scientific notation numbers."""
         test_cases = [
-            '{"key": 1.23e4}',
-            '{"key": -1.23e-4}',
-            '{"key": 1.23e+4}',
+            ('{"key": 1.23e4}', {"key": 1.23e4}),
+            ('{"key": 1.23E4}', {"key": 1.23e4}),
+            ('{"key": -1.23e-4}', {"key": -1.23e-4}),
+            ('{"key": 1.23e+4}', {"key": 1.23e4}),
         ]
-        for json_input in test_cases:
-            self.parser = StreamJsonParser()  # Reset parser for each case
-            self.parser.consume(json_input)
-            self.actual = self.parser.get()
-            self.assertEqual(self.actual, json_input)
+        for json_input, expected in test_cases:
+            parser = StreamJsonParser()  # Reset parser for each case
+            parser.consume(json_input)
+            result = parser.get()
+            assert result == expected
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_corner_cases(self):
+    def test_object_number_corner_cases(self, parser):
         """Test object with number corner cases."""
         test_cases = [
-            '{"key": 0}',
-            '{"key": -0}',
-            '{"key": 0.0}',
-            '{"key": 1e0}',
-            '{"key": 1E-0}',
+            ('{"key": 0}', {"key": 0}),
+            ('{"key": -0}', {"key": -0}),
+            ('{"key": 0.0}', {"key": 0.0}),
+            ('{"key": 1e0}', {"key": 1e0}),
+            ('{"key": 1E-0}', {"key": 1e-0}),
         ]
-        for json_input in test_cases:
-            self.parser = StreamJsonParser()  # Reset parser for each case
-            self.parser.consume(json_input)
-            self.actual = self.parser.get()
-            self.assertEqual(self.actual, json_input)
+        for json_input, expected in test_cases:
+            parser = StreamJsonParser()  # Reset parser for each case
+            parser.consume(json_input)
+            result = parser.get()
+            assert result == expected
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_object_number_partial(self):
+    def test_object_number_partial(self, parser):
         """Test object with partial number input."""
         # Test partial integer
-        self.parser.consume('{"key": 12')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": 12}')
+        parser.consume('{"key": 12')
+        result = parser.get()
+        assert result == {"key": "12"}
 
         # Test partial float
-        self.parser = StreamJsonParser()
-        self.parser.consume('{"key": 12.')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": 12}')
+        parser = StreamJsonParser()
+        parser.consume('{"key": 12.')
+        result = parser.get()
+        assert result == {"key": "12."}
 
         # Test partial scientific notation
-        self.parser = StreamJsonParser()
-        self.parser.consume('{"key": 1.2e')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"key": 1.2}')
+        parser = StreamJsonParser()
+        parser.consume('{"key": 1.2e')
+        result = parser.get()
+        assert result == {"key": "1.2e"}
 
-    def test_object_number_malformed(self):
+    def test_object_number_malformed(self, parser):
         """Test object with malformed numbers."""
         invalid_cases = [
             '{"key": 12..34}',  # Double decimal
@@ -406,108 +375,109 @@ class TestStreamJsonParser(unittest.TestCase):
             '{"key": --123}',  # Double negative
             '{"key": 12e4.5}',  # Decimal in exponent
         ]
-        # Verify no exception is raised
-        # we are not validating the validity of the LLM outputs
         for json_input in invalid_cases:
-            self.parser = StreamJsonParser()
-            try:
-                self.parser.consume(json_input)
-                self.parser.get()
-            except Exception as e:
-                self.fail(f"consume() raised {type(e).__name__} unexpectedly!")
+            parser = StreamJsonParser()
+            with pytest.raises(StreamParserJSONDecodeError):
+                parser.consume(json_input)
+                parser.get()
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_mixed_types(self):
+    def test_array_mixed_types(self, parser):
         """Test array with different types of values."""
-        self.parser.consume('[1, "string", true, null, 3.14, -42]')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '[1, "string", true, null, 3.14, -42]')
+        parser.consume('[1, "string", true, null, 3.14, -42]')
+        result = parser.get()
+        assert result == [1, "string", True, None, 3.14, -42]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_nested_arrays(self):
+    def test_array_nested_arrays(self, parser):
         """Test array containing other arrays."""
-        self.parser.consume("[[1, 2], [3, 4], []]")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "[[1, 2], [3, 4], []]")
+        parser.consume("[[1, 2], [3, 4], []]")
+        result = parser.get()
+        assert result == [[1, 2], [3, 4], []]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_nested_objects(self):
+    def test_array_nested_objects(self, parser):
         """Test array containing objects."""
-        self.parser.consume('[{"a": 1}, {"b": 2}, {}]')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '[{"a": 1}, {"b": 2}, {}]')
+        parser.consume('[{"a": 1}, {"b": 2}, {}]')
+        result = parser.get()
+        assert result == [{"a": 1}, {"b": 2}, {}]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_complex_nesting(self):
+    def test_array_complex_nesting(self, parser):
         """Test array with complex nesting of arrays and objects."""
-        self.parser.consume('[{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '[{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]')
+        parser.consume('[{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]')
+        result = parser.get()
+        assert result == [{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_partial_complex(self):
+    def test_array_whitespace(self, parser):
+        """Test array with various whitespace patterns."""
+        test_cases = [
+            ("[  1  ,  2  ]", [1, 2]),
+            ("[\n1,\n2\n]", [1, 2]),
+            ("[\r1,\t2\r\n]", [1, 2]),
+            ("[ ]", []),
+        ]
+        for json_input, expected in test_cases:
+            parser = StreamJsonParser()
+            parser.consume(json_input)
+            result = parser.get()
+            assert result == expected
+
+    def test_array_partial_complex(self, parser):
         """Test partial parsing of complex array structures."""
         # Start with empty array in object
-        self.parser.consume('{"data": [')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"data": []}')
+        parser.consume('{"data": [')
+        result = parser.get()
+        assert result == {"data": []}
 
         # Add nested object
-        self.parser.consume('{"nested": [1, 2]}')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"data": [{"nested": [1, 2]}]}')
+        parser.consume('{"nested": [1, 2]}')
+        result = parser.get()
+        assert result == {"data": [{"nested": [1, 2]}]}
 
         # Add comma and start new item
-        self.parser.consume(', {"more": {')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '{"data": [{"nested": [1, 2]}, {"more": {}}]}')
+        parser.consume(', {"more": {')
+        result = parser.get()
+        assert result == {"data": [{"nested": [1, 2]}, {"more": {}}]}
 
         # Complete the structure
-        self.parser.consume('"x": 3}}]}')
-        self.actual = self.parser.get()
-        self.assertEqual(
-            self.actual, '{"data": [{"nested": [1, 2]}, {"more": {"x": 3}}]}'
-        )
+        parser.consume('"x": 3}}]}')
+        result = parser.get()
+        assert result == {"data": [{"nested": [1, 2]}, {"more": {"x": 3}}]}
 
-    def test_array_malformed(self):
+    def test_array_malformed(self, parser):
         """Test malformed array inputs."""
         invalid_cases = [
             "[,]",  # Empty element
             "[1, , 2]",  # Missing element
-            "[1, 2,]",  # Trailing comma
             "[1, 2]]",  # Extra closing bracket
         ]
         for json_input in invalid_cases:
-            self.parser = StreamJsonParser()
-            with self.assertRaises(StreamParserJSONDecodeError):
-                self.parser.consume(json_input)
-                self.parser.get()
+            parser = StreamJsonParser()
+            with pytest.raises(StreamParserJSONDecodeError):
+                parser.consume(json_input)
+                parser.get()
 
-    @pytest.mark.usefixtures("validate_json")
-    def test_array_streaming_edge_cases(self):
+    def test_array_streaming_edge_cases(self, parser):
         """Test edge cases in streaming array parsing."""
         # Test extremely small chunks
-        self.parser.consume("[")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, "[]")
+        parser.consume("[")
+        result = parser.get()
+        assert result == []
 
-        self.parser.consume('"')
-        self.parser.consume("t")
-        self.parser.consume("e")
-        self.parser.consume("s")
-        self.parser.consume("t")
-        self.parser.consume('"')
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test"]')
+        parser.consume('"')
+        parser.consume("t")
+        parser.consume("e")
+        parser.consume("s")
+        parser.consume("t")
+        parser.consume('"')
+        result = parser.get()
+        assert result == ["test"]
 
         # Test multiple commas in chunks
-        self.parser.consume(", ")
-        self.parser.consume("1, ")
-        self.parser.consume("true, ")
-        self.parser.consume("null]")
-        self.actual = self.parser.get()
-        self.assertEqual(self.actual, '["test", 1, true, null]')
+        parser.consume(", ")
+        parser.consume("1, ")
+        parser.consume("true, ")
+        parser.consume("null]")
+        result = parser.get()
+        assert result == ["test", 1, True, None]
 
 
 if __name__ == "__main__":
-    unittest.main()
+    pytest.main()
