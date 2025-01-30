@@ -69,47 +69,57 @@ class TestStreamJsonParser:
     def test_object_one_chunk(self, parser):
         """Test consuming a simple JSON object"""
         parser.consume('{"key": "value"}')
-        result = parser.get()
-        assert result == {"key": "value"}
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_partial_key(self, parser):
         """Test consuming JSON with incomplete key"""
         parser.consume('{"key')
-        result = parser.get()
-        assert result == {}
+        actual = parser.get()
+        assert actual == {}
 
     def test_object_partial_key_extended(self, parser):
         """Test consuming JSON with incomplete key"""
         parser.consume('{"key": "value"')
         parser.consume(',"new')
-        result = parser.get()
-        assert result == {"key": "value"}
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_value_type_known(self, parser):
         """Test consuming JSON with not known value type"""
         parser.consume('{"key":')
-        result = parser.get()
-        assert result == {}
+        actual = parser.get()
+        assert actual == {}
 
     def test_object_value_type_known_partial(self, parser):
         """Test consuming JSON with incomplete value but known value type"""
         parser.consume('{"key": "')
-        result = parser.get()
-        assert result == {"key": ""}
+        actual = parser.get()
+        assert actual == {"key": ""}
 
     def test_object_value_type_known_partial_value(self, parser):
         """Test consuming JSON with incomplete value but String value can be incomple"""
         parser.consume('{"key": "val')
-        result = parser.get()
-        assert result == {"key": "val"}
+        actual = parser.get()
+        assert actual == {"key": "val"}
 
     def test_object_in_chunks(self, parser):
         """Test consuming JSON in multiple parts"""
         parser.consume('{"key')
         parser.consume('u": "val')
         parser.consume('ue"}')
-        result = parser.get()
-        assert result == {"keyu": "value"}
+        actual = parser.get()
+        assert actual == {"keyu": "value"}
+
+    def test_object_in_chunks_with_single_tokens(self, parser):
+        """Test consuming JSON in multiple parts"""
+        parser.consume('{"key"')
+        parser.consume(":")
+        parser.consume('"')
+        parser.consume("value")
+        parser.consume('"')
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_malformed(self, parser):
         """Test consuming JSON in multiple parts"""
@@ -121,96 +131,96 @@ class TestStreamJsonParser:
     def test_object_nested_object(self, parser):
         """Test consuming nested JSON objects"""
         parser.consume('{"outer": {"inner": "value"}}')
-        result = parser.get()
-        assert result == {"outer": {"inner": "value"}}
+        actual = parser.get()
+        assert actual == {"outer": {"inner": "value"}}
 
     def test_object_nested_partial_key(self, parser):
         """Test consuming nested JSON objects"""
         parser.consume('{"outer": {"inner')
-        result = parser.get()
-        assert result == {"outer": {}}
+        actual = parser.get()
+        assert actual == {"outer": {}}
 
     def test_object_nested_partial_value(self, parser):
         """Test consuming nested JSON objects"""
         parser.consume('{"outer": {"inner": "val')
-        result = parser.get()
-        assert result == {"outer": {"inner": "val"}}
+        actual = parser.get()
+        assert actual == {"outer": {"inner": "val"}}
 
     def test_object_whitespace_before_key(self, parser):
         """Test object with various whitespace before key."""
         parser.consume('{\n\t  "key": "value"}')
-        result = parser.get()
-        assert result == {"key": "value"}
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_whitespace_after_key(self, parser):
         """Test object with various whitespace after key."""
         parser.consume('{"key"\r\n\t : "value"}')
-        result = parser.get()
-        assert result == {"key": "value"}
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_whitespace_before_value(self, parser):
         """Test object with various whitespace before value."""
         parser.consume('{"key":\n\r\t  "value"}')
-        result = parser.get()
-        assert result == {"key": "value"}
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_whitespace_after_value(self, parser):
         """Test object with various whitespace after value."""
         parser.consume('{"key": "value"\n\t\r  }')
-        result = parser.get()
-        assert result == {"key": "value"}
+        actual = parser.get()
+        assert actual == {"key": "value"}
 
     def test_object_whitespace_between_pairs(self, parser):
         """Test object with various whitespace between key-value pairs."""
         parser.consume('{"key1": "value1"\n\t\r  ,\n\t  "key2": "value2"}')
-        result = parser.get()
-        assert result == {"key1": "value1", "key2": "value2"}
+        actual = parser.get()
+        assert actual == {"key1": "value1", "key2": "value2"}
 
     def test_object_partial_whitespace(self, parser):
         """Test partial object with whitespace in chunks."""
         parser.consume('{\n\t  "key1"')
-        result = parser.get()
-        assert result == {}
+        actual = parser.get()
+        assert actual == {}
 
         parser.consume("\r\n\t  :  \n\t")
-        result = parser.get()
-        assert result == {}
+        actual = parser.get()
+        assert actual == {}
 
         parser.consume('"value1"\n\r\t  }')
-        result = parser.get()
-        assert result == {"key1": "value1"}
+        actual = parser.get()
+        assert actual == {"key1": "value1"}
 
     def test_object_empty_with_whitespace(self, parser):
         """Test empty object with various whitespace."""
         parser.consume("{\n\t\r  }")
-        result = parser.get()
-        assert result == {}
+        actual = parser.get()
+        assert actual == {}
 
     def test_object_nested_with_whitespace(self, parser):
         """Test nested object with various whitespace."""
         parser.consume('{\n  "outer"\t: {\r\n\t  "inner": "value"\n\t  }\r\n}')
-        result = parser.get()
-        assert result == {"outer": {"inner": "value"}}
+        actual = parser.get()
+        assert actual == {"outer": {"inner": "value"}}
 
     def test_object_corner_case_unicode_escape(self, parser):
         """Test object with Unicode escape sequences in key and value."""
         parser.consume('{"\\u006B\\u0065')  # "key": "val"
         parser.consume('\\u0079": "\\u0076')
         parser.consume('\\u0061\\u006C"}')
-        result = parser.get()
-        assert result == {"\\u006B\\u0065\\u0079": "\\u0076\\u0061\\u006C"}
+        actual = parser.get()
+        assert actual == {"\\u006B\\u0065\\u0079": "\\u0076\\u0061\\u006C"}
 
     def test_object_corner_case_escaped_quotes(self, parser):
         """Test object with escaped quotes in key and value."""
         parser.consume('{"key\\"name": "value\\"text"}')
-        result = parser.get()
-        assert result == {'key\\"name': 'value\\"text'}
+        actual = parser.get()
+        assert actual == {'key\\"name': 'value\\"text'}
 
     def test_object_corner_case_escaped_special(self, parser):
         """Test object with escaped special characters."""
         parser.consume('{"key\\n\\t": "value\\r\\n"}')
-        result = parser.get()
-        assert result == {"key\\n\\t": "value\\r\\n"}
+        actual = parser.get()
+        assert actual == {"key\\n\\t": "value\\r\\n"}
 
     def test_object_corner_case_max_nesting(self, parser):
         """Test object with deep nesting."""
@@ -221,9 +231,9 @@ class TestStreamJsonParser:
             + "}" * 20
         )
         parser.consume(deep_json)
-        result = parser.get()
+        actual = parser.get()
         # Verify the deepest value
-        current = result
+        current = actual
         for i in range(20):
             assert f"k{i}" in current
             current = current[f"k{i}"]
@@ -233,90 +243,98 @@ class TestStreamJsonParser:
         """Test object with very long key and value."""
         long_str = "x" * 1000
         parser.consume(f'{{"{long_str}": "{long_str}"}}')
-        result = parser.get()
-        assert result == {long_str: long_str}
+        actual = parser.get()
+        assert actual == {long_str: long_str}
 
     def test_object_corner_case_empty_key_value(self, parser):
         """Test object with empty key and value."""
         parser.consume('{"": ""}')
-        result = parser.get()
-        assert result == {"": ""}
+        actual = parser.get()
+        assert actual == {"": ""}
 
     def test_empty_array(self, parser):
         """Test parsing an empty array."""
         parser.consume("[]")
-        result = parser.get()
-        assert result == []
+        actual = parser.get()
+        assert actual == []
 
     def test_array_with_single_value(self, parser):
         """Test parsing an array with a single string value."""
         parser.consume('["test"]')
-        result = parser.get()
-        assert result == ["test"]
+        actual = parser.get()
+        assert actual == ["test"]
 
     def test_array_with_multiple_values(self, parser):
         """Test parsing an array with multiple string values."""
         parser.consume('["test1", "test2", "test3"]')
-        result = parser.get()
-        assert result == ["test1", "test2", "test3"]
+        actual = parser.get()
+        assert actual == ["test1", "test2", "test3"]
 
     def test_array_with_partial_input(self, parser):
         """Test parsing an array with partial input in multiple chunks."""
         parser.consume('["test1"')
-        result = parser.get()
-        assert result == ["test1"]
+        actual = parser.get()
+        assert actual == ["test1"]
 
         parser.consume(', "test2"')
-        result = parser.get()
-        assert result == ["test1", "test2"]
+        actual = parser.get()
+        assert actual == ["test1", "test2"]
 
         parser.consume("]")
-        result = parser.get()
-        assert result == ["test1", "test2"]
+        actual = parser.get()
+        assert actual == ["test1", "test2"]
 
     def test_nested_array_in_object(self, parser):
         """Test parsing an object containing an array."""
         parser.consume('{"values": ["test1", "test2"]}')
-        result = parser.get()
-        assert result == {"values": ["test1", "test2"]}
+        actual = parser.get()
+        assert actual == {"values": ["test1", "test2"]}
 
     def test_array_in_object_partial(self, parser):
         """Test parsing an object with array using partial input."""
         parser.consume('{"values": [')
-        result = parser.get()
-        assert result == {"values": []}
+        actual = parser.get()
+        assert actual == {"values": []}
 
         parser.consume('"test1", ')
-        result = parser.get()
-        assert result == {"values": ["test1"]}
+        actual = parser.get()
+        assert actual == {"values": ["test1"]}
 
         parser.consume('"test2"]}')
-        result = parser.get()
-        assert result == {"values": ["test1", "test2"]}
+        actual = parser.get()
+        assert actual == {"values": ["test1", "test2"]}
 
     def test_object_number_integer(self, parser):
         """Test object with integer values."""
         parser.consume('{"key": 123}')
-        result = parser.get()
-        assert result == {"key": 123}
+        actual = parser.get()
+        assert actual == {"key": 123}
+
+    def test_object_number_single_tokens(self, parser):
+        """Test object with negative numbers."""
+        parser.consume('{"key": ')
+        parser.consume("-456")
+        parser.consume("}")
+        actual = parser.get()
+        assert actual == {"key": -456}
 
     def test_object_number_negative(self, parser):
         """Test object with negative numbers."""
         parser.consume('{"key": -456}')
-        result = parser.get()
-        assert result == {"key": -456}
+        actual = parser.get()
+        assert actual == {"key": -456}
 
     def test_object_number_float(self, parser):
         """Test object with floating point numbers."""
         parser.consume('{"key": 123.456}')
-        result = parser.get()
-        assert result == {"key": 123.456}
+        actual = parser.get()
+        assert actual == {"key": 123.456}
 
     def test_object_number_negative_float(self, parser):
         """Test object with negative floating point numbers."""
         parser.consume('{"key": -123.456}')
-        result = parser.get()
-        assert result == {"key": -123.456}
+        actual = parser.get()
+        assert actual == {"key": -123.456}
 
     def test_object_number_scientific(self, parser):
         """Test object with scientific notation numbers."""
@@ -329,8 +347,8 @@ class TestStreamJsonParser:
         for json_input, expected in test_cases:
             parser = StreamJsonParser()  # Reset parser for each case
             parser.consume(json_input)
-            result = parser.get()
-            assert result == expected
+            actual = parser.get()
+            assert actual == expected
 
     def test_object_number_corner_cases(self, parser):
         """Test object with number corner cases."""
@@ -344,27 +362,27 @@ class TestStreamJsonParser:
         for json_input, expected in test_cases:
             parser = StreamJsonParser()  # Reset parser for each case
             parser.consume(json_input)
-            result = parser.get()
-            assert result == expected
+            actual = parser.get()
+            assert actual == expected
 
     def test_object_number_partial(self, parser):
         """Test object with partial number input."""
         # Test partial integer
         parser.consume('{"key": 12')
-        result = parser.get()
-        assert result == {"key": 12}
+        actual = parser.get()
+        assert actual == {"key": 12}
 
         # Test partial float
         parser = StreamJsonParser()
         parser.consume('{"key": 12.')
-        result = parser.get()
-        assert result == {"key": 12.0}
+        actual = parser.get()
+        assert actual == {"key": 12.0}
 
         # Test partial scientific notation
         parser = StreamJsonParser()
         parser.consume('{"key": 1.2e0')
-        result = parser.get()
-        assert result == {"key": 1.2e0}
+        actual = parser.get()
+        assert actual == {"key": 1.2e0}
 
     def test_object_number_malformed(self, parser):
         """Test object with malformed numbers."""
@@ -385,26 +403,26 @@ class TestStreamJsonParser:
     def test_array_mixed_types(self, parser):
         """Test array with different types of values."""
         parser.consume('[1, "string", true, null, 3.14, -42]')
-        result = parser.get()
-        assert result == [1, "string", True, None, 3.14, -42]
+        actual = parser.get()
+        assert actual == [1, "string", True, None, 3.14, -42]
 
     def test_array_nested_arrays(self, parser):
         """Test array containing other arrays."""
         parser.consume("[[1, 2], [3, 4], []]")
-        result = parser.get()
-        assert result == [[1, 2], [3, 4], []]
+        actual = parser.get()
+        assert actual == [[1, 2], [3, 4], []]
 
     def test_array_nested_objects(self, parser):
         """Test array containing objects."""
         parser.consume('[{"a": 1}, {"b": 2}, {}]')
-        result = parser.get()
-        assert result == [{"a": 1}, {"b": 2}, {}]
+        actual = parser.get()
+        assert actual == [{"a": 1}, {"b": 2}, {}]
 
     def test_array_complex_nesting(self, parser):
         """Test array with complex nesting of arrays and objects."""
         parser.consume('[{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]')
-        result = parser.get()
-        assert result == [{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]
+        actual = parser.get()
+        assert actual == [{"arr": [1, 2, {"x": [3, 4]}]}, [5, {"y": 6}]]
 
     def test_array_whitespace(self, parser):
         """Test array with various whitespace patterns."""
@@ -417,30 +435,30 @@ class TestStreamJsonParser:
         for json_input, expected in test_cases:
             parser = StreamJsonParser()
             parser.consume(json_input)
-            result = parser.get()
-            assert result == expected
+            actual = parser.get()
+            assert actual == expected
 
     def test_array_partial_complex(self, parser):
         """Test partial parsing of complex array structures."""
         # Start with empty array in object
         parser.consume('{"data": [')
-        result = parser.get()
-        assert result == {"data": []}
+        actual = parser.get()
+        assert actual == {"data": []}
 
         # Add nested object
         parser.consume('{"nested": [1, 2]}')
-        result = parser.get()
-        assert result == {"data": [{"nested": [1, 2]}]}
+        actual = parser.get()
+        assert actual == {"data": [{"nested": [1, 2]}]}
 
         # Add comma and start new item
         parser.consume(', {"more": {')
-        result = parser.get()
-        assert result == {"data": [{"nested": [1, 2]}, {"more": {}}]}
+        actual = parser.get()
+        assert actual == {"data": [{"nested": [1, 2]}, {"more": {}}]}
 
         # Complete the structure
         parser.consume('"x": 3}}]}')
-        result = parser.get()
-        assert result == {"data": [{"nested": [1, 2]}, {"more": {"x": 3}}]}
+        actual = parser.get()
+        assert actual == {"data": [{"nested": [1, 2]}, {"more": {"x": 3}}]}
 
     def test_array_malformed(self, parser):
         """Test malformed array inputs."""
@@ -459,8 +477,8 @@ class TestStreamJsonParser:
         """Test edge cases in streaming array parsing."""
         # Test extremely small chunks
         parser.consume("[")
-        result = parser.get()
-        assert result == []
+        actual = parser.get()
+        assert actual == []
 
         parser.consume('"')
         parser.consume("t")
@@ -468,16 +486,16 @@ class TestStreamJsonParser:
         parser.consume("s")
         parser.consume("t")
         parser.consume('"')
-        result = parser.get()
-        assert result == ["test"]
+        actual = parser.get()
+        assert actual == ["test"]
 
         # Test multiple commas in chunks
         parser.consume(", ")
         parser.consume("1, ")
         parser.consume("true, ")
         parser.consume("null]")
-        result = parser.get()
-        assert result == ["test", 1, True, None]
+        actual = parser.get()
+        assert actual == ["test", 1, True, None]
 
 
 if __name__ == "__main__":
