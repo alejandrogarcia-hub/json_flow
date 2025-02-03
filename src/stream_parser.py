@@ -59,123 +59,76 @@ class MalformedJSON(StreamParserJSONDecodeError):
 
 def scan(json_string: str) -> list[tuple[int, str]]:
     """Tokenizes a JSON-like string with emphasis on structural characters.
-
-    This function breaks down a JSON string into tokens, giving precedence to structural
-    characters ([]{}:,) as delimiters. It handles strings, numbers, and JSON literals
-    while preserving their positions in the input.
-
+    
+    This version inlines helper routines to reduce function-call overhead,
+    which can yield significant speedups.
+    
     Args:
         json_string: The input string to be tokenized.
-
+    
     Returns:
         A list of tuples where each tuple contains:
-            - Position (int): The starting index of the token in the input string
-            - Token (str): The actual token string
-
-    Examples:
-        >>> scan('u": "val')
-        [(0, 'u"'), (2, ':'), (4, '"val')]
-        >>> scan('{ "key')
-        [(0, '{'), (1, ' "key')]
+            - Position (int): The starting index of the token in the input string.
+            - Token (str): The actual token string.
     """
     tokens = []
     i = 0
     length = len(json_string)
-
-    # Structural delimiters
-    structural = set("[]{}:,")
-
-    def is_structural(ch):
-        return ch in structural
-
-    # Helper: consume a string (assuming current char is the opening quote).
-    # Returns the substring (including both quotes if we find a closing one),
-    # or from the opening quote to end-of-string if not closed.
-    def consume_string(start_idx):
-        # start_idx should point to the opening quote '"'
-        escaped = False
-        idx = start_idx + 1  # move past the opening quote
-        while idx < length:
-            c = json_string[idx]
-            if escaped:
-                escaped = False
-                idx += 1
-            else:
-                if c == "\\":
-                    escaped = True
-                    idx += 1
-                elif c == '"':
-                    # Found matching closing quote
-                    idx += 1
-                    return json_string[start_idx:idx], idx
-                else:
-                    idx += 1
-        # If we get here, we never found a closing quote
-        return json_string[start_idx:length], length
-
-    # Helper: consume a "word" (letters) or partial text until whitespace/structural
-    def consume_text(start_idx):
-        idx = start_idx
-        while idx < length:
-            # Stop if we hit structural or whitespace
-            if is_structural(json_string[idx]) or json_string[idx].isspace():
-                break
-            idx += 1
-        return json_string[start_idx:idx], idx
-
-    # Helper: consume a number (starting with +, -, or digit)
-    def consume_number(start_idx):
-        idx = start_idx
-        # We already know json_string[idx] is +, -, or digit
-        idx += 1  # consume that sign or first digit
-
-        # forward
-        while idx < length and json_string[idx] in "1234567890.-+eE":
-            idx += 1
-
-        return json_string[start_idx:idx], idx
+    # Structural characters as a string literal (membership check in a small string is fast)
+    structural = "[]{}:,"
 
     while i < length:
         c = json_string[i]
 
-        # Skip whitespace
+        # Skip whitespace.
         if c.isspace():
             i += 1
             continue
 
-        # If it's a structural character, that is always a separate token
-        if is_structural(c):
+        # Structural characters become single tokens.
+        if c in structural:
             tokens.append((i, c))
             i += 1
             continue
 
-        # If chunk starts with a quote, parse as a string
+        # If it starts with a double quote, parse a string.
         if c == '"':
-            text, next_pos = consume_string(i)
-            tokens.append((i, text))
-            i = next_pos
+            start = i
+            i += 1  # Skip the opening quote.
+            escaped = False
+            while i < length:
+                ch = json_string[i]
+                if escaped:
+                    escaped = False
+                    i += 1
+                elif ch == '\\':
+                    escaped = True
+                    i += 1
+                elif ch == '"':
+                    i += 1  # Include the closing quote.
+                    break
+                else:
+                    i += 1
+            tokens.append((start, json_string[start:i]))
             continue
 
-        # Otherwise, let's see if it might be a number
+        # If the token starts with a number character, parse a number.
         if c in "+-0123456789":
-            num_text, next_pos = consume_number(i)
-            tokens.append((i, num_text))
-            i = next_pos
+            start = i
+            i += 1  # Consume the sign or first digit.
+            while i < length and json_string[i] in "0123456789.-+eE":
+                i += 1
+            tokens.append((start, json_string[start:i]))
             continue
 
-        # Otherwise, consume text up to next structural or whitespace
-        text, next_pos = consume_text(i)
-
-        # If the resulting text is exactly one of the JSON literals,
-        # then record it as such.
-        if text in ("true", "false", "null"):
-            tokens.append((i, text))
-        else:
-            tokens.append((i, text))
-
-        i = next_pos
+        # Otherwise, consume text until whitespace or a structural character is encountered.
+        start = i
+        while i < length and (not json_string[i].isspace() and json_string[i] not in structural):
+            i += 1
+        tokens.append((start, json_string[start:i]))
 
     return tokens
+
 
 
 class StreamJsonParser:
